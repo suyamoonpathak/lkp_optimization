@@ -1,5 +1,21 @@
 # Benchmark Results: JBD2 Fast Commit Barrier Deferral
 
+> ⚠️  **SUPERSEDED — DO NOT CITE THESE NUMBERS.**
+>
+> The 57% improvement reported below is **an artifact** of two
+> methodological errors:
+>   1. `fast_commit` was not enabled on the test filesystem (caught by
+>      Milan). Without that feature, the patch has zero effect.
+>   2. The stock and patched runs used different durations (5 MB short
+>      run vs 60 s time-based run), so the comparison was not
+>      apples-to-apples.
+>
+> Re-run on a `fast_commit`-enabled filesystem with identical 30 s runs
+> showed stock = 6,590 µs vs patched = 6,661 µs (no improvement).
+>
+> See `CANDIDATE1_postmortem.md` for the full story. This file is kept
+> only as a record of the early mistake.
+
 **Date:** 2026-04-22  
 **Kernel:** Linux 6.1.4-cs614-hacker  
 **Workload:** fio randwrite, bs=4k, size=20M, ioengine=sync, fsync=1, numjobs=4, runtime=60s  
