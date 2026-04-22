@@ -151,7 +151,7 @@ run_one() {
 
     echo "  → $tag"
 
-    mkfs.ext4 -F -q "$BLOCK_DEV"
+    mkfs.ext4 -F -q -O fast_commit "$BLOCK_DEV"
     mount -o "$mount_opts" "$BLOCK_DEV" "$MOUNT_POINT"
     sync && echo 3 > /proc/sys/vm/drop_caches && sleep 1
 

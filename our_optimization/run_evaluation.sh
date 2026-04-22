@@ -140,7 +140,7 @@ run_one() {
     echo "--- Run: $label (mode=$mount_opts jobs=$numjobs rw=$rw) ---"
 
     # Fresh filesystem every run
-    mkfs.ext4 -F -q "$BLOCK_DEV"
+    mkfs.ext4 -F -q -O fast_commit "$BLOCK_DEV"
     mount -o "$mount_opts" "$BLOCK_DEV" "$MOUNT_POINT"
     drop_caches
 

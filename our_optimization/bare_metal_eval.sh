@@ -139,7 +139,7 @@ run_benchmark() {
     echo "  → $tag"
 
     # Fresh filesystem — eliminates fragmentation effects between runs
-    mkfs.ext4 -F -q "$BLOCK_DEV"
+    mkfs.ext4 -F -q -O fast_commit "$BLOCK_DEV"
     mount -o "$ext4_opts" "$BLOCK_DEV" "$MOUNT_POINT"
 
     # Drop page cache — ensures cold cache each run
