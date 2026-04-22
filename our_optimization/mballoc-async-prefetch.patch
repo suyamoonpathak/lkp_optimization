@@ -1,0 +1,187 @@
+diff --git a/fs/ext4/ext4.h b/fs/ext4/ext4.h
+--- a/fs/ext4/ext4.h
++++ b/fs/ext4/ext4.h
+@@ -1620,6 +1620,10 @@
+ 	unsigned int s_mb_prefetch;
+ 	unsigned int s_mb_prefetch_limit;
+ 
++	/* Async bitmap init support (see mballoc.c:ext4_mb_prefetch_fini) */
++	struct workqueue_struct *s_bitmap_init_wq;
++	struct kmem_cache       *s_bitmap_init_slab;
++
+ 	/* stats for buddy allocator */
+ 	atomic_t s_bal_reqs;	/* number of reqs with len > 1 */
+ 	atomic_t s_bal_success;	/* we found long enough chunks */
+diff --git a/fs/ext4/mballoc.c b/fs/ext4/mballoc.c
+--- a/fs/ext4/mballoc.c
++++ b/fs/ext4/mballoc.c
+@@ -1356,6 +1356,56 @@
+ }
+ 
+ /*
++ * Async bitmap init - off the allocator's critical path.
++ *
++ * ext4_mb_prefetch_fini() used to call ext4_mb_init_group() synchronously,
++ * which can block on bitmap READ I/O. The below infrastructure lets
++ * prefetch_fini offload that work to a per-sb workqueue when the bitmap
++ * is not yet uptodate. See the TODO above ext4_mb_prefetch_fini().
++ */
++static int ext4_mb_init_group(struct super_block *sb, ext4_group_t group,
++			      gfp_t gfp);
++
++struct ext4_bitmap_init_work {
++	struct work_struct  work;
++	struct super_block *sb;
++	ext4_group_t        group;
++};
++
++static void ext4_mb_async_init_worker(struct work_struct *work)
++{
++	struct ext4_bitmap_init_work *w =
++		container_of(work, struct ext4_bitmap_init_work, work);
++
++	/*
++	 * ext4_mb_init_group() early-returns if NEED_INIT is already clear
++	 * (another racer finished first). Errors intentionally ignored:
++	 * NEED_INIT stays set, so the next synchronous caller retries.
++	 */
++	ext4_mb_init_group(w->sb, w->group, GFP_NOFS);
++
++	kmem_cache_free(EXT4_SB(w->sb)->s_bitmap_init_slab, w);
++}
++
++static void ext4_mb_schedule_async_init(struct super_block *sb,
++					ext4_group_t group)
++{
++	struct ext4_sb_info *sbi = EXT4_SB(sb);
++	struct ext4_bitmap_init_work *w;
++
++	w = kmem_cache_alloc(sbi->s_bitmap_init_slab, GFP_NOFS);
++	if (!w) {
++		/* Fallback: synchronous - no worse than pre-patch */
++		ext4_mb_init_group(sb, group, GFP_NOFS);
++		return;
++	}
++	INIT_WORK(&w->work, ext4_mb_async_init_worker);
++	w->sb    = sb;
++	w->group = group;
++	queue_work(sbi->s_bitmap_init_wq, &w->work);
++}
++
++/*
+  * Locking note:  This routine calls ext4_mb_init_cache(), which takes the
+  * block group lock of all groups for this page; do not hold the BG lock when
+  * calling this routine!
+@@ -2572,20 +2622,44 @@
+ 	while (nr-- > 0) {
+ 		struct ext4_group_desc *gdp = ext4_get_group_desc(sb, group,
+ 								  NULL);
+-		struct ext4_group_info *grp = ext4_get_group_info(sb, group);
++		struct ext4_group_info *grp;
++		struct buffer_head     *bh;
+ 
+ 		if (!group)
+ 			group = ext4_get_groups_count(sb);
+ 		group--;
+ 		grp = ext4_get_group_info(sb, group);
+ 
+-		if (EXT4_MB_GRP_NEED_INIT(grp) &&
+-		    ext4_free_group_clusters(sb, gdp) > 0 &&
+-		    !(ext4_has_group_desc_csum(sb) &&
+-		      (gdp->bg_flags & cpu_to_le16(EXT4_BG_BLOCK_UNINIT)))) {
+-			if (ext4_mb_init_group(sb, group, GFP_NOFS))
++		if (!(EXT4_MB_GRP_NEED_INIT(grp) &&
++		      ext4_free_group_clusters(sb, gdp) > 0 &&
++		      !(ext4_has_group_desc_csum(sb) &&
++			(gdp->bg_flags & cpu_to_le16(EXT4_BG_BLOCK_UNINIT)))))
++			continue;
++
++		/*
++		 * Opportunistic: if the bitmap buffer is already uptodate,
++		 * do the buddy setup inline - it is just CPU work once the
++		 * page is in memory. Otherwise, defer to the per-sb
++		 * workqueue so the caller (ext4_mb_regular_allocator) does
++		 * not sleep waiting for the bitmap READ to complete.
++		 *
++		 * ext4_read_block_bitmap_nowait(sb, group, false) returns
++		 * the bitmap buffer head; if the prefetched READ already
++		 * completed, buffer_uptodate() is true and we init inline.
++		 * If the READ is still in flight, we defer. The call is
++		 * idempotent against the original prefetch I/O.
++		 */
++		bh = ext4_read_block_bitmap_nowait(sb, group, false);
++		if (!IS_ERR_OR_NULL(bh) && buffer_uptodate(bh)) {
++			if (ext4_mb_init_group(sb, group, GFP_NOFS)) {
++				brelse(bh);
+ 				break;
++			}
++		} else {
++			ext4_mb_schedule_async_init(sb, group);
+ 		}
++		if (!IS_ERR_OR_NULL(bh))
++			brelse(bh);
+ 	}
+ }
+ 
+@@ -3465,6 +3539,23 @@
+ 		sbi->s_mb_max_linear_groups = 0;
+ 	else
+ 		sbi->s_mb_max_linear_groups = MB_DEFAULT_LINEAR_LIMIT;
++	/* Async bitmap init infrastructure (see ext4_mb_prefetch_fini).
++	 * Placed before ext4_mb_init_backend() so failures here cannot leak
++	 * backend resources (s_buddy_cache, s_group_info). */
++	sbi->s_bitmap_init_slab = kmem_cache_create("ext4_bitmap_init_work",
++		sizeof(struct ext4_bitmap_init_work), 0,
++		SLAB_RECLAIM_ACCOUNT, NULL);
++	if (!sbi->s_bitmap_init_slab) {
++		ret = -ENOMEM;
++		goto out_free_locality_groups;
++	}
++	sbi->s_bitmap_init_wq = alloc_workqueue("ext4-bitmap-init/%s",
++		WQ_UNBOUND | WQ_MEM_RECLAIM, 1, sb->s_id);
++	if (!sbi->s_bitmap_init_wq) {
++		ret = -ENOMEM;
++		goto out_free_locality_groups;
++	}
++
+ 	/* init file for buddy data */
+ 	ret = ext4_mb_init_backend(sb);
+ 	if (ret != 0)
+@@ -3476,6 +3567,14 @@
+ 	free_percpu(sbi->s_locality_groups);
+ 	sbi->s_locality_groups = NULL;
+ out:
++	if (sbi->s_bitmap_init_wq) {
++		destroy_workqueue(sbi->s_bitmap_init_wq);
++		sbi->s_bitmap_init_wq = NULL;
++	}
++	if (sbi->s_bitmap_init_slab) {
++		kmem_cache_destroy(sbi->s_bitmap_init_slab);
++		sbi->s_bitmap_init_slab = NULL;
++	}
+ 	kfree(sbi->s_mb_avg_fragment_size);
+ 	kfree(sbi->s_mb_avg_fragment_size_locks);
+ 	kfree(sbi->s_mb_largest_free_orders);
+@@ -3513,6 +3612,22 @@
+ 	struct kmem_cache *cachep = get_groupinfo_cache(sb->s_blocksize_bits);
+ 	int count;
+ 
++	/*
++	 * Drain the async bitmap-init workqueue before freeing any group
++	 * info: pending workers call ext4_mb_init_group() which reads
++	 * group_info. flush_workqueue + destroy_workqueue together
++	 * guarantees no worker is still running when we return.
++	 */
++	if (sbi->s_bitmap_init_wq) {
++		flush_workqueue(sbi->s_bitmap_init_wq);
++		destroy_workqueue(sbi->s_bitmap_init_wq);
++		sbi->s_bitmap_init_wq = NULL;
++	}
++	if (sbi->s_bitmap_init_slab) {
++		kmem_cache_destroy(sbi->s_bitmap_init_slab);
++		sbi->s_bitmap_init_slab = NULL;
++	}
++
+ 	if (test_opt(sb, DISCARD)) {
+ 		/*
+ 		 * wait the discard work to drain all of ext4_free_data
