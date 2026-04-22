@@ -65,13 +65,48 @@ else
     TX_BEFORE=$(awk 'NR==1 {print $1; exit}' "$JBD2_INFO")
 fi
 
-# Measured loop
-echo "Running $N setfattr operations..."
+# Measured loop: overwrite a single xattr N times, fsync after each.
+# The fsync is what forces a per-operation JBD2 commit — without it,
+# all ops accumulate into one transaction and we measure nothing.
+# Using a single key avoids exhausting xattr space; using a dedicated
+# C helper keeps syscall overhead minimal.
+#
+# If the helper is not built, fall back to setfattr+sync (much slower
+# due to sync traversing the whole page cache; still measures the
+# right ratio).
+HELPER="$(dirname "$0")/xattr_fsync_helper"
+if [ ! -x "$HELPER" ]; then
+    echo "Building xattr_fsync_helper..."
+    cat > "${HELPER}.c" <<'HEOF'
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/xattr.h>
+
+int main(int argc, char **argv) {
+    if (argc != 3) { fprintf(stderr, "usage: %s <file> <N>\n", argv[0]); return 2; }
+    const char *path = argv[1];
+    long N = atol(argv[2]);
+    int fd = open(path, O_RDWR);
+    if (fd < 0) { perror("open"); return 1; }
+    char val[32];
+    for (long i = 0; i < N; i++) {
+        int n = snprintf(val, sizeof(val), "v%ld", i);
+        if (fsetxattr(fd, "user.test", val, n, 0) < 0) { perror("fsetxattr"); return 1; }
+        if (fsync(fd) < 0) { perror("fsync"); return 1; }
+    }
+    close(fd);
+    return 0;
+}
+HEOF
+    gcc -O2 -o "$HELPER" "${HELPER}.c" || { echo "gcc build failed"; exit 1; }
+fi
+
+echo "Running $N setxattr+fsync operations..."
 T0=$(date +%s%N)
-for i in $(seq 1 $N); do
-    setfattr -n "user.test_$i" -v "val_$i" "$MP/f"
-done
-sync
+"$HELPER" "$MP/f" "$N"
 T1=$(date +%s%N)
 ELAPSED_MS=$(( (T1 - T0) / 1000000 ))
 PER_OP_US=$(( (T1 - T0) / 1000 / N ))

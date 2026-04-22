@@ -1,0 +1,8 @@
+kernel=6.1.4-cs614-c3-patched
+N=5000
+elapsed_ms=22734
+per_op_us=4546
+tx_before=1
+tx_after=79
+tx_delta=78
+commits_per_op=0.02

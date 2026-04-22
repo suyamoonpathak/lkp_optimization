@@ -28,8 +28,10 @@ touch "$MP/f"
 setfattr -n user.warmup -v x "$MP/f"
 sync
 
-# Write a 4000-byte xattr — well over inline limit, forces block path.
-BIG=$(head -c 4000 /dev/urandom | base64 -w0)
+# Write a 500-byte xattr — well over inline limit (~80 bytes for a
+# 256-byte inode), forces the xattr-block path, but small enough to
+# fit within one 4K xattr block.
+BIG=$(head -c 500 /dev/urandom | base64 -w0)
 setfattr -n user.big -v "$BIG" "$MP/f"
 sync -f "$MP/f"
 
