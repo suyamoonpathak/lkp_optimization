@@ -1,0 +1,108 @@
+diff --git a/fs/ext4/fast_commit.c b/fs/ext4/fast_commit.c
+--- a/fs/ext4/fast_commit.c
++++ b/fs/ext4/fast_commit.c
+@@ -879,6 +879,15 @@
+ 	else if (EXT4_INODE_SIZE(inode->i_sb) > EXT4_GOOD_OLD_INODE_SIZE)
+ 		inode_len += ei->i_extra_isize;
+ 
++	/* If inline xattrs are present, log the full inode so the xattr
++	 * region (past GOOD_OLD_INODE_SIZE + i_extra_isize) is captured.
++	 * Replay's memcpy at ext4_fc_replay_inode handles the larger
++	 * length transparently; the validator accepts up to
++	 * sbi->s_inode_size.
++	 */
++	if (ext4_test_inode_state(inode, EXT4_STATE_XATTR))
++		inode_len = EXT4_INODE_SIZE(inode->i_sb);
++
+ 	fc_inode.fc_ino = cpu_to_le32(inode->i_ino);
+ 	tl.fc_tag = cpu_to_le16(EXT4_FC_TAG_INODE);
+ 	tl.fc_len = cpu_to_le16(inode_len + sizeof(fc_inode.fc_ino));
+diff --git a/fs/ext4/xattr.c b/fs/ext4/xattr.c
+--- a/fs/ext4/xattr.c
++++ b/fs/ext4/xattr.c
+@@ -2295,6 +2295,7 @@
+ 	};
+ 	int no_expand;
+ 	int error;
++	bool touched_block = false;
+ 
+ 	if (!name)
+ 		return -EINVAL;
+@@ -2359,8 +2360,10 @@
+ 	if (!value) {
+ 		if (!is.s.not_found)
+ 			error = ext4_xattr_ibody_set(handle, inode, &i, &is);
+-		else if (!bs.s.not_found)
++		else if (!bs.s.not_found) {
++			touched_block = true;
+ 			error = ext4_xattr_block_set(handle, inode, &i, &bs);
++		}
+ 	} else {
+ 		error = 0;
+ 		/* Xattr value did not change? Save us some work and bail out */
+@@ -2371,12 +2374,15 @@
+ 
+ 		if (ext4_has_feature_ea_inode(inode->i_sb) &&
+ 		    (EXT4_XATTR_SIZE(i.value_len) >
+-			EXT4_XATTR_MIN_LARGE_EA_SIZE(inode->i_sb->s_blocksize)))
++			EXT4_XATTR_MIN_LARGE_EA_SIZE(inode->i_sb->s_blocksize))) {
++			touched_block = true;
+ 			i.in_inode = 1;
++		}
+ retry_inode:
+ 		error = ext4_xattr_ibody_set(handle, inode, &i, &is);
+ 		if (!error && !bs.s.not_found) {
+ 			i.value = NULL;
++			touched_block = true;
+ 			error = ext4_xattr_block_set(handle, inode, &i, &bs);
+ 		} else if (error == -ENOSPC) {
+ 			if (EXT4_I(inode)->i_file_acl && !bs.s.base) {
+@@ -2386,6 +2392,7 @@
+ 				if (error)
+ 					goto cleanup;
+ 			}
++			touched_block = true;
+ 			error = ext4_xattr_block_set(handle, inode, &i, &bs);
+ 			if (!error && !is.s.not_found) {
+ 				i.value = NULL;
+@@ -2398,6 +2405,7 @@
+ 				 */
+ 				if (ext4_has_feature_ea_inode(inode->i_sb) &&
+ 				    i.value_len && !i.in_inode) {
++					touched_block = true;
+ 					i.in_inode = 1;
+ 					goto retry_inode;
+ 				}
+@@ -2419,7 +2427,16 @@
+ 		if (IS_SYNC(inode))
+ 			ext4_handle_sync(handle);
+ 	}
+-	ext4_fc_mark_ineligible(inode->i_sb, EXT4_FC_REASON_XATTR, handle);
++	/*
++	 * Skip ineligibility marking for inline-only success on a
++	 * filesystem where the xattr feature bit is already persisted.
++	 * Fast commit logs the (expanded) inode record in that case.
++	 * Fall back to full commit on error, on any block/ea-inode
++	 * touch, or on first-xattr (feature bit not yet persisted).
++	 */
++	if (error || touched_block || !ext4_has_feature_xattr(inode->i_sb))
++		ext4_fc_mark_ineligible(inode->i_sb,
++					EXT4_FC_REASON_XATTR, handle);
+ 
+ cleanup:
+ 	brelse(is.iloc.bh);
+@@ -2497,7 +2514,13 @@
+ 		if (error == 0)
+ 			error = error2;
+ 	}
+-	ext4_fc_mark_ineligible(inode->i_sb, EXT4_FC_REASON_XATTR, NULL);
++	/*
++	 * Ineligibility marking (when required) is handled inside
++	 * ext4_xattr_set_handle under the still-open handle, so it can
++	 * target the right transaction. The previous unconditional call
++	 * here was redundant for error paths (no modification) and
++	 * harmful for the inline-only fast path added in Candidate 3.
++	 */
+ 
+ 	return error;
+ }
