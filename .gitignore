@@ -1,0 +1,38 @@
+# Linux kernel source tree (recipients download their own pristine 6.1.4)
+linux-6.1.4/
+
+# Kernel module build artifacts
+*.ko
+*.mod
+*.mod.c
+*.mod.o
+*.o
+*.cmd
+*.order
+Module.symvers
+modules.builtin*
+
+# Benchmark/eval artifacts
+*.img
+*.tar
+*.tar.xz
+*.tar.gz
+*.dat
+kprobe_test.*
+/tmp/
+
+# Old benchmark data (stale, superseded by our_optimization/eval_results)
+Project/jbd2_benchmarks/
+
+# Editor / OS cruft
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Academic paper — do not redistribute (copyright)
+atc24-shirwadkar.pdf
+
+# Personal brainstorming notes (keep local, not relevant for collaborators)
+options.txt

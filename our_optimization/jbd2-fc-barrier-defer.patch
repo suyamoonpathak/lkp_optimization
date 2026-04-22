@@ -1,0 +1,75 @@
+diff --git a/fs/jbd2/commit.c b/fs/jbd2/commit.c
+index 885a7a6cc..09d175309 100644
+--- a/fs/jbd2/commit.c
++++ b/fs/jbd2/commit.c
+@@ -441,25 +441,13 @@ void jbd2_journal_commit_transaction(journal_t *journal)
+ 
+ 	write_lock(&journal->j_state_lock);
+ 	journal->j_flags |= JBD2_FULL_COMMIT_ONGOING;
+-	while (journal->j_flags & JBD2_FAST_COMMIT_ONGOING) {
+-		DEFINE_WAIT(wait);
+-
+-		prepare_to_wait(&journal->j_fc_wait, &wait,
+-				TASK_UNINTERRUPTIBLE);
+-		write_unlock(&journal->j_state_lock);
+-		schedule();
+-		write_lock(&journal->j_state_lock);
+-		finish_wait(&journal->j_fc_wait, &wait);
+-		/*
+-		 * TODO: by blocking fast commits here, we are increasing
+-		 * fsync() latency slightly. Strictly speaking, we don't need
+-		 * to block fast commits until the transaction enters T_FLUSH
+-		 * state. So an optimization is possible where we block new fast
+-		 * commits here and wait for existing ones to complete
+-		 * just before we enter T_FLUSH. That way, the existing fast
+-		 * commits and this full commit can proceed parallely.
+-		 */
+-	}
++	/*
++	 * Setting JBD2_FULL_COMMIT_ONGOING above prevents any NEW fast commits
++	 * from starting (jbd2_fc_begin_commit checks this flag). In-flight fast
++	 * commits are allowed to finish; we drain them later, just before
++	 * T_FLUSH, which is the earliest point where j_fc_off must be reset and
++	 * a conflict with fast commit's FC-area writes actually exists.
++	 */
+ 	write_unlock(&journal->j_state_lock);
+ 
+ 	commit_transaction = journal->j_running_transaction;
+@@ -469,7 +457,6 @@ void jbd2_journal_commit_transaction(journal_t *journal)
+ 			commit_transaction->t_tid);
+ 
+ 	write_lock(&journal->j_state_lock);
+-	journal->j_fc_off = 0;
+ 	J_ASSERT(commit_transaction->t_state == T_RUNNING);
+ 	commit_transaction->t_state = T_LOCKED;
+ 
+@@ -563,6 +550,29 @@ void jbd2_journal_commit_transaction(journal_t *journal)
+ 	stats.run.rs_locked = jbd2_time_diff(stats.run.rs_locked,
+ 					     stats.run.rs_flushing);
+ 
++	/*
++	 * Drain any fast commits that were already in flight when we set
++	 * JBD2_FULL_COMMIT_ONGOING. We must complete this drain before
++	 * entering T_FLUSH because:
++	 *   (a) T_FLUSH resets j_fc_off to 0; a fast commit still writing to
++	 *       the FC area would then corrupt its own allocation, and
++	 *   (b) T_FLUSH sets j_committing_transaction, which fast commit
++	 *       reads to verify the journal is consistent.
++	 * JBD2_FULL_COMMIT_ONGOING has already blocked all new fast commits,
++	 * so this loop runs at most once per in-flight fast commit.
++	 */
++	while (journal->j_flags & JBD2_FAST_COMMIT_ONGOING) {
++		DEFINE_WAIT(wait);
++
++		prepare_to_wait(&journal->j_fc_wait, &wait,
++				TASK_UNINTERRUPTIBLE);
++		write_unlock(&journal->j_state_lock);
++		schedule();
++		write_lock(&journal->j_state_lock);
++		finish_wait(&journal->j_fc_wait, &wait);
++	}
++	journal->j_fc_off = 0;
++
+ 	commit_transaction->t_state = T_FLUSH;
+ 	journal->j_committing_transaction = commit_transaction;
+ 	journal->j_running_transaction = NULL;
