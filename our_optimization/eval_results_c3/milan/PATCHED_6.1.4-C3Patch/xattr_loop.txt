@@ -1,0 +1,9 @@
+kernel=6.1.4-C3Patch
+label=PATCHED
+N=5000
+repeats=3
+elapsed_ms_mean=30089
+elapsed_ms_stdev=2088
+tx_delta_mean=78
+per_op_us_mean=6017
+commits_per_op=0.0156

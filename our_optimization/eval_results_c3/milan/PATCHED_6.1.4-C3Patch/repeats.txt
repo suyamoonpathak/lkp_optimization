@@ -1,0 +1,4 @@
+repeat elapsed_ms tx_delta per_op_us
+1 32393 78 6478
+2 28321 78 5664
+3 29552 78 5910
