@@ -1,0 +1,9 @@
+kernel=6.1.4
+label=STOCK
+N=5000
+repeats=3
+elapsed_ms_mean=57627
+elapsed_ms_stdev=3225
+tx_delta_mean=5000
+per_op_us_mean=11525
+commits_per_op=1.0000
