@@ -1,0 +1,31 @@
+Project Group Name: <TO BE FILLED IN BY GROUP>
+
+Members:
+  - Suyamoon Pathak (241110091) -- <contribution %>
+  - <other member name>          (<roll number>) -- <contribution %>
+  - <other member name>          (<roll number>) -- <contribution %>
+
+Declaration:
+"All project members own and give their consent on everything submitted as
+part of this submission. The work done and submitted in the project are
+done by the members of the project group mentioned above. Any use of
+external sources such as source code from other repositories, GPT
+generated source code/documentation/Figures etc. are properly attributed."
+
+Attributions (external sources used):
+  - Linux 6.1.4 kernel source, downloaded from
+    https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.1.4.tar.xz
+    Our patch fc-inline-xattr.patch modifies fs/ext4/xattr.c and
+    fs/ext4/fast_commit.c under the kernel's existing GPL v2 license.
+  - The ATC 2024 FastCommit paper by Shirwadkar, Kadekodi, and Ts'o
+    was referenced for design context and its identification of the
+    xattr coverage gap.
+  - xfstests from
+    https://git.kernel.org/pub/scm/fs/xfs/xfstests-dev.git
+    was used unmodified for correctness evaluation.
+  - The fio benchmarking tool (https://fio.readthedocs.io) was used
+    unmodified for the non-xattr regression check.
+  - AI assistance (Claude) was used for brainstorming patch ideas,
+    drafting benchmark scripts, and proofreading the report. All final
+    patch code, benchmark scripts, and prose were reviewed, tested,
+    and approved by the project members before submission.
