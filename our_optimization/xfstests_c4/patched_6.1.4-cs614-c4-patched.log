@@ -1,0 +1,31 @@
+FSTYP         -- ext4
+PLATFORM      -- Linux/x86_64 lkp-ubuntu-VirtualBox 6.1.4-cs614-c4-patched #6 SMP PREEMPT_DYNAMIC Thu Apr 23 23:59:14 IST 2026
+MKFS_OPTIONS  -- -F -O fast_commit /dev/loop19
+MOUNT_OPTIONS -- -o acl,user_xattr /dev/loop19 /mnt/xfstests_scratch
+
+ext4/032     10s ...  15s
+generic/062  1s ...  3s
+generic/118        [not run] Reflink not supported by test filesystem type: ext4
+generic/300  8s ...  12s
+generic/337  1s ...  1s
+generic/454  1s ...  3s
+generic/455        [not run] This test requires a valid $LOGWRITES_DEV
+generic/473        - output mismatch (see /home/lkp-ubuntu/xfstests/results//generic/473.out.bad)
+    --- tests/generic/473.out	2026-04-23 15:44:45.910224017 +0530
+    +++ /home/lkp-ubuntu/xfstests/results//generic/473.out.bad	2026-04-24 00:30:00.044893616 +0530
+    @@ -6,7 +6,7 @@
+     1: [256..287]: hole
+     Hole + Data
+     0: [0..127]: hole
+    -1: [128..255]: data
+    +1: [128..135]: data
+     Hole + Data + Hole
+     0: [0..127]: hole
+    ...
+    (Run 'diff -u /home/lkp-ubuntu/xfstests/tests/generic/473.out /home/lkp-ubuntu/xfstests/results//generic/473.out.bad'  to see the entire diff)
+generic/482        [not run] This test requires a valid $LOGWRITES_DEV
+Ran: ext4/032 generic/062 generic/118 generic/300 generic/337 generic/454 generic/455 generic/473 generic/482
+Not run: generic/118 generic/455 generic/482
+Failures: generic/473
+Failed 1 of 9 tests
+
