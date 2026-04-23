@@ -1,0 +1,14 @@
+Contributor: milan
+Date:        2026-04-23T22:07:31+05:30
+Kernel:      6.1.4-C3Patch
+Run label:   PATCHED
+CPU:         11th Gen Intel(R) Core(TM) i3-1115G4 @ 3.00GHz
+Cores:       4
+RAM:         7.5Gi
+Storage:
+loop0       4K    0 
+loop1    73.9M    0 
+loop2   245.1M    0 
+loop3    66.8M    0 
+loop4   254.6M    0 
+Workload:    5000 setxattr+fsync ops on fast_commit ext4 (256MB loop)

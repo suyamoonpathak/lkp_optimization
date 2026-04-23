@@ -1,0 +1,14 @@
+Contributor: milan
+Date:        2026-04-23T20:06:29+05:30
+Kernel:      6.1.4
+Run label:   STOCK
+CPU:         11th Gen Intel(R) Core(TM) i3-1115G4 @ 3.00GHz
+Cores:       4
+RAM:         7.5Gi
+Storage:
+loop0    66.8M    0 
+loop1    73.9M    0 
+loop2       4K    0 
+loop3   245.1M    0 
+loop4   254.6M    0 
+Workload:    5000 setxattr+fsync ops on fast_commit ext4 (256MB loop)

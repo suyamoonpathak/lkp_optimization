@@ -1,0 +1,4 @@
+repeat elapsed_ms tx_delta per_op_us
+1 60624 5000 12124
+2 58044 5000 11608
+3 54214 5000 10842
