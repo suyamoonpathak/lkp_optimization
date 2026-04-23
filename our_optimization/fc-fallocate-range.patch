@@ -1,0 +1,46 @@
+diff --git a/fs/ext4/extents.c b/fs/ext4/extents.c
+--- a/fs/ext4/extents.c
++++ b/fs/ext4/extents.c
+@@ -5360,7 +5360,20 @@
+ 		ret = PTR_ERR(handle);
+ 		goto out_mmap;
+ 	}
+-	ext4_fc_mark_ineligible(sb, EXT4_FC_REASON_FALLOC_RANGE, handle);
++	/*
++	 * Track the full affected logical range (from punch_start to the
++	 * current EOF) for fast commit. At fc commit time, the iterator in
++	 * ext4_fc_write_inode_data walks the post-shift extent tree and
++	 * emits ADD_RANGE for shifted extents plus DEL_RANGE for the tail
++	 * that is now past the shrunken i_size. FC_TAG_INODE written
++	 * later by ext4_mark_inode_dirty carries the new i_size, and
++	 * ext4_fc_set_bitmaps_and_counters reconciles the block bitmap at
++	 * the end of replay. This replaces the previous unconditional
++	 * ext4_fc_mark_ineligible(EXT4_FC_REASON_FALLOC_RANGE) fallback.
++	 */
++	ext4_fc_track_range(handle, inode, punch_start,
++			    ((inode->i_size + inode->i_sb->s_blocksize - 1) >>
++			     EXT4_BLOCK_SIZE_BITS(inode->i_sb)) - 1);
+ 
+ 	down_write(&EXT4_I(inode)->i_data_sem);
+ 	ext4_discard_preallocations(inode, 0);
+@@ -5505,7 +5518,19 @@
+ 		ret = PTR_ERR(handle);
+ 		goto out_mmap;
+ 	}
+-	ext4_fc_mark_ineligible(sb, EXT4_FC_REASON_FALLOC_RANGE, handle);
++	/*
++	 * Track the full affected logical range for fast commit. The range
++	 * runs from offset_lblk (the insertion point) to the post-grow EOF
++	 * (old_size + len). At fc commit time, the iterator walks the
++	 * post-shift extent tree and emits DEL_RANGE for the newly created
++	 * hole plus ADD_RANGE for the shifted extents; FC_TAG_INODE
++	 * carries the grown i_size. This replaces the previous
++	 * unconditional ext4_fc_mark_ineligible(EXT4_FC_REASON_FALLOC_RANGE)
++	 * fallback.
++	 */
++	ext4_fc_track_range(handle, inode, offset_lblk,
++			    ((inode->i_size + len + inode->i_sb->s_blocksize - 1)
++			     >> EXT4_BLOCK_SIZE_BITS(inode->i_sb)) - 1);
+ 
+ 	/* Expand file to avoid data loss if there is error while shifting */
+ 	inode->i_size += len;
