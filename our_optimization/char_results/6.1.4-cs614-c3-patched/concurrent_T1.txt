@@ -1,0 +1,3 @@
+run=2026-04-23T23:40:46+05:30 kernel=6.1.4-cs614-c3-patched threads=1 ops_each=100 total_ops=100 elapsed_ms=698 ms_per_op=6.981 tx_delta=2 tx_per_op=0.020
+run=2026-04-23T23:41:40+05:30 kernel=6.1.4-cs614-c3-patched threads=1 ops_each=100 total_ops=100 elapsed_ms=717 ms_per_op=7.170 tx_delta=2 tx_per_op=0.020
+run=2026-04-23T23:42:11+05:30 kernel=6.1.4-cs614-c3-patched threads=1 ops_each=100 total_ops=100 elapsed_ms=768 ms_per_op=7.685 tx_delta=2 tx_per_op=0.020
