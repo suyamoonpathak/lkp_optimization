@@ -1,0 +1,10 @@
+kernel=6.1.4-C3Patch
+label=BASELINE
+mode=insert
+N=1000
+repeats=3
+elapsed_ms_mean=11539
+elapsed_ms_stdev=541
+tx_delta_mean=1001
+per_op_us_mean=11539
+commits_per_op=1.0010
