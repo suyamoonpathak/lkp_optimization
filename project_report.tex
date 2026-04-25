@@ -896,21 +896,52 @@ work. On a real SSD the relative share of journal cost is larger so
 the wall-time speedup should grow, similar to how Candidate~3
 jumped from 27\% on VM to 48\% on bare-metal.
 
-\subsection{Performance evaluation: bare-metal (pending)}
+\subsection{Performance evaluation: bare-metal}
 
-At the time of writing, Milan's bare-metal re-run of the C4
-benchmark is pending. We prepared a dedicated instruction file at
-\texttt{our\_optimization/INSTRUCTIONS\_MILAN\_C4.md} and a
-benchmark driver at \texttt{our\_optimization/eval\_milan\_c4.sh}
-that mirror the C3 setup. Because C3 is already in Milan's tree,
-the only incremental work is the C4 patch itself, a rebuild, and a
-benchmark run. We expect the transaction-count reduction
-(62.5$\times$) to reproduce exactly, because it is an architectural
-claim that does not depend on the hardware. The wall-time gain is
-likely to be larger than our 24\% VM result, in line with how
-Candidate~3 saw its wall-time gain nearly double on real SSD.
+Milan re-ran the same benchmark on his bare-metal machine: 11th~Gen
+Intel Core i3-1115G4, 4~cores, 7.5~GiB RAM, real SATA SSD. Three
+repeats of each configuration. Baseline kernel: his already-installed
+\texttt{6.1.4-cs614-c3-patched} (architecturally identical to stock
+on the fallocate path because C3 only modifies xattr code). Patched
+kernel: \texttt{6.1.4-cs614-c4-patched} with both C3 and C4 stacked.
 
-This pending bare-metal rerun is the only open item for Candidate~4.
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+Metric & Baseline (C3) & Patched (C3+C4) & Change \\
+\midrule
+\multicolumn{4}{l}{\textit{COLLAPSE\_RANGE}} \\
+Wall time (mean)     & 12{,}445~ms & 7{,}032~ms & $-43.5\%$ \\
+Stdev                & 970~ms      & 39~ms      & ($\sim$0.5\% CV patched) \\
+Per-op latency       & 12{,}445~$\mu$s & 7{,}032~$\mu$s & $-43.5\%$ \\
+JBD2 full commits    & 1{,}001 & \textbf{16} & $\mathbf{-98.4\%}$ \\
+\midrule
+\multicolumn{4}{l}{\textit{INSERT\_RANGE}} \\
+Wall time (mean)     & 11{,}539~ms & 6{,}680~ms & $-42.1\%$ \\
+Stdev                & 541~ms      & 142~ms     & ($\sim$2\% CV patched) \\
+Per-op latency       & 11{,}539~$\mu$s & 6{,}680~$\mu$s & $-42.1\%$ \\
+JBD2 full commits    & 1{,}001 & \textbf{16} & $\mathbf{-98.4\%}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Two observations match the C3 pattern exactly.
+
+First, the transaction-count reduction is \textbf{byte-identical} to
+the VM: 1001~$\to$~16, in both modes. This is the architectural
+claim of the patch and it reproduces across machines without any
+tuning. tx\_delta on bare-metal equals tx\_delta on VM because both
+machines run the same kernel code over the same workload.
+
+Second, the wall-time speedup is \textbf{nearly doubled} on the
+bare-metal machine: 43--44\% vs 23--26\% on the VM. The reason is
+the same as for C3: real SSD has a smaller share of non-journal
+overhead per \texttt{fsync}, so eliminating the JBD2 full commit
+yields a larger relative gain.
+
+Variance on the patched runs is exceptionally low: 39~ms stdev on a
+7000~ms mean (0.5\% CV) for COLLAPSE, 142~ms stdev on 6680~ms
+(2\% CV) for INSERT. The signal is not a one-off artifact.
 
 \subsection{Non-fallocate regression check}
 
