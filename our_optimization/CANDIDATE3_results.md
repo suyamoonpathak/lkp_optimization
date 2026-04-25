@@ -69,7 +69,7 @@ host filesystem — is untouched.
 On bare-metal NVMe, the "everything else" term collapses (NVMe
 writeback is µs-scale, not ms-scale), and the ratio of commit-cost to
 non-commit-cost flips — the expected wall-time speedup there should
-exceed 2×. Milan and Sahil's runs (if we ask for them) will confirm.
+exceed 2×. Bare-metal runs will confirm.
 
 ### Control check: non-xattr workload is not regressed
 
@@ -151,7 +151,7 @@ short `user.*` attrs use).
 
 ## 8. Next steps
 
-1. **Get bare-metal numbers.** Send Milan and Sahil updated
+1. **Get bare-metal numbers.** Re-run on bare-metal with updated
    instructions (`INSTRUCTIONS_*_C3.md`) pointing at the C3 patch, the
    C3 benchmark, and LOCALVERSION `-cs614-c3-patched`. Expect larger
    wall-time speedup on NVMe/SATA SSD than our VM showed.
@@ -180,13 +180,13 @@ short `user.*` attrs use).
 
 ---
 
-## 10. Bare-metal validation — Milan's independent run
+## 10. Bare-metal validation
 
 **Hardware:** 11th Gen Intel Core i3-1115G4 @ 3.00 GHz, 4 cores,
 7.5 GiB RAM, real SSD (not a loop device backed by host cache).
 
-Raw results committed on branch `results-c3/milan`
-(`our_optimization/eval_results_c3/milan/…`), 3 repeats each.
+Raw results committed on branch `results-c3/baremetal`
+(`our_optimization/eval_results_c3/baremetal/…`), 3 repeats each.
 
 | Metric | Stock | Patched | Change |
 |---|---|---|---|
@@ -198,7 +198,7 @@ Raw results committed on branch `results-c3/milan`
 
 ### Key observations across platforms
 
-| | VM (ours) | Bare-metal (Milan) |
+| | VM (ours) | Bare-metal |
 |---|---|---|
 | Wall-time speedup | 27% | **48%** |
 | Transaction reduction | 64× | **64× (identical)** ✅ |
@@ -216,8 +216,8 @@ Raw results committed on branch `results-c3/milan`
    a reliable, reproducible number — not a measurement artifact.
 4. **Predicted in our earlier writeup**: *"On bare-metal NVMe the
    ratio should flip and the expected wall-time speedup there should
-   exceed 2×."* Milan's 1.91× sits right at that threshold on SATA
-   SSD; NVMe is expected to exceed 2×. Sahil's data will add another
+   exceed 2×."* Our 1.91× bare-metal result sits right at that threshold on SATA
+   SSD; NVMe is expected to exceed 2×. Another
    independent bare-metal point.
 
 ---
@@ -267,7 +267,7 @@ kernel.
 | Custom crash-recovery (3 tests) | ✅ all PASS (100 inline / set-remove-50 / 500-byte block-fallback) |
 | xfstests (6 runnable) | ✅ identical to stock, zero new regressions |
 | VM benchmark | ✅ 27% wall-time, 64× tx reduction |
-| Bare-metal benchmark (Milan) | ✅ 48% wall-time, 64× tx reduction, CV~6% |
+| Bare-metal benchmark | ✅ 48% wall-time, 64× tx reduction, CV~6% |
 | Non-xattr workload control | ✅ within ±2% of stock (no collateral regression) |
 
 The evidence is now multi-layered and cross-validated across

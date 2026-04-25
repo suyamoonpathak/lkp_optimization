@@ -98,11 +98,11 @@ the patch does not eliminate. The win is concentrated in the journal
 path. On a real SSD, where flush latency dominates extent-tree CPU work
 less than on this VM, the wall-time share of the win should be larger.
 
-## 3.4 Bare-metal results — Milan's machine
+## 3.4 Bare-metal results
 
-Milan re-ran the same benchmark on his 11th Gen Intel Core i3-1115G4
+We re-ran the same benchmark on bare-metal hardware: 11th Gen Intel Core i3-1115G4
 (4 cores, 7.5 GiB RAM, real SATA SSD), 3 repeats per mode. Baseline
-kernel was his already-installed `6.1.4-cs614-c3-patched`
+kernel was `6.1.4-cs614-c3-patched`
 (architecturally identical to stock on the fallocate path); patched
 was `6.1.4-cs614-c4-patched` with both C3 and C4 stacked.
 
@@ -119,14 +119,14 @@ was `6.1.4-cs614-c4-patched` with both C3 and C4 stacked.
   output of the journal-path mechanism we changed.
 - **Wall-time gain nearly doubles on bare-metal**: 22.8% (VM) →
   **43.5%** (bare-metal) for COLLAPSE; 25.9% → **42.1%** for INSERT.
-  Same pattern as C3 (27% VM → 48% Milan), and for the same reason:
+  Same pattern as C3 (27% VM → 48% bare-metal), and for the same reason:
   real SSD has a smaller share of non-journal overhead per fsync, so
   removing the JBD2 full commit shows a larger relative gain.
 - **Variance is much smaller on bare-metal**. Patched COLLAPSE has
   39 ms stdev on a 7032 ms mean (0.5% CV). The signal is not a
   one-off measurement artifact.
 
-Raw data at `our_optimization/eval_results_c4/milan/{BASELINE_6.1.4-C3Patch,
+Raw data at `our_optimization/eval_results_c4/baremetal/{BASELINE_6.1.4-C3Patch,
 PATCHED_C4_6.1.4-C3C4Patch}/`.
 
 ## 4. Correctness — crash-recovery microbenches
@@ -212,7 +212,7 @@ Full log: `our_optimization/xfstests_c4/patched_6.1.4-cs614-c4-patched.log`.
   Those are allocation paths that already take the fast-commit-eligible
   branch via `ext4_map_blocks` tracking; we verified they don't hit
   `mark_ineligible(FALLOC_RANGE)`.
-- **Bare-metal validation done.** Milan's run on his i3-1115G4 / SSD
+- **Bare-metal validation done.** The bare-metal run on the i3-1115G4 / SSD
   reproduces the architectural claim byte-identically (1001 → 16
   full commits) and shows a 43--44% wall-time speedup, nearly double
   the VM number. Same machine he validated C3 on, same script

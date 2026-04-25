@@ -1,17 +1,17 @@
 #!/bin/bash
-# EXT4 FASTCOMMIT FALLOCATE RANGE — Evaluation Script for MILAN (Candidate 4)
+# EXT4 FASTCOMMIT FALLOCATE RANGE — Bare-metal Evaluation Script (Candidate 4)
 #
 # Patch: our_optimization/fc-fallocate-range.patch
 # Results writeup: our_optimization/CANDIDATE4_results.md
 # C3 (already done): our_optimization/CANDIDATE3_results.md
 #
 # Prerequisite: C3 has already been merged into your Linux 6.1.4 tree
-# (the INSTRUCTIONS_MILAN_C3.md flow). This script adds the C4 patch
+# (the INSTRUCTIONS_BAREMETAL_C3.md flow). This script adds the C4 patch
 # on top, rebuilds, and measures the fallocate range benchmark.
 #
 # Run TWICE:
-#   Step 1 (STOCK_OR_C3):   sudo bash eval_milan_c4.sh   # on kernel without C4
-#   Step 2 (PATCHED_C4):    sudo bash eval_milan_c4.sh   # on kernel with C4
+#   Step 1 (STOCK_OR_C3):   sudo bash eval_baremetal_c4.sh   # on kernel without C4
+#   Step 2 (PATCHED_C4):    sudo bash eval_baremetal_c4.sh   # on kernel with C4
 #
 # Auto-detects by scanning the kernel source tree for the "punch_start"
 # usage of ext4_fc_track_range, which exists only after our C4 patch.
@@ -19,7 +19,7 @@
 
 set -euo pipefail
 
-CONTRIBUTOR="milan"
+CONTRIBUTOR="baremetal"
 
 # Workload parameters
 N=1000

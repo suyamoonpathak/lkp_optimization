@@ -1,20 +1,20 @@
 #!/bin/bash
-# EXT4 FASTCOMMIT INLINE XATTR — Evaluation Script for SAHIL (Candidate 3)
+# EXT4 FASTCOMMIT INLINE XATTR — Bare-metal Evaluation Script (Candidate 3)
 #
 # Patch: our_optimization/fc-inline-xattr.patch
 # Spec:  docs/superpowers/specs/2026-04-23-ext4-fastcommit-inline-xattr-design.md
 # Results writeup: our_optimization/CANDIDATE3_results.md
 #
 # Run TWICE:
-#   Step 1 (STOCK):    sudo bash eval_sahil_c3.sh    # on unpatched 6.1.4
-#   Step 2 (PATCHED):  sudo bash eval_sahil_c3.sh    # on cs614-c3-patched
+#   Step 1 (STOCK):    sudo bash eval_baremetal_c3.sh    # on unpatched 6.1.4
+#   Step 2 (PATCHED):  sudo bash eval_baremetal_c3.sh    # on cs614-c3-patched
 #
 # Auto-detects STOCK vs PATCHED by scanning the kernel source tree for
 # the "touched_block" identifier (present only after our patch).
 
 set -euo pipefail
 
-CONTRIBUTOR="sahil"
+CONTRIBUTOR="baremetal"
 
 # Workload parameters
 N=5000

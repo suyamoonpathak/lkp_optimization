@@ -1,6 +1,6 @@
-# Candidate 3 Evaluation Instructions (Milan)
+# Candidate 3 Bare-metal Evaluation Instructions
 
-Hi Milan — **this is the candidate that worked** on our VM: 64× fewer
+This is the candidate that worked on our VM: 64× fewer
 JBD2 commits and 27% wall-time speedup on a xattr+fsync workload, no
 regressions elsewhere, all crash-recovery tests pass.
 
@@ -70,19 +70,19 @@ Run the benchmark:
 ```bash
 # in REPO
 cd ~/jbd2-project
-sudo bash our_optimization/eval_milan_c3.sh
+sudo bash our_optimization/eval_baremetal_c3.sh
 ```
 
 Runtime ~5 min. Auto-detects STOCK vs PATCHED by scanning your kernel
 source tree for `bool touched_block` (absent = stock).
 
-Results save to `our_optimization/eval_results_c3/milan/STOCK_<kernel>/`.
+Results save to `our_optimization/eval_results_c3/baremetal/STOCK_<kernel>/`.
 
 Commit and push right away:
 ```bash
 # in REPO
 cd ~/jbd2-project
-git add our_optimization/eval_results_c3/milan/
+git add our_optimization/eval_results_c3/baremetal/
 git commit -m "milan: c3 stock baseline"
 git push -u origin results-c3/milan
 ```
@@ -182,13 +182,13 @@ sudo reboot
 ```bash
 # in REPO
 cd ~/jbd2-project
-sudo bash our_optimization/eval_milan_c3.sh
+sudo bash our_optimization/eval_baremetal_c3.sh
 ```
 
 The script auto-detects PATCHED by finding `bool touched_block` in
 your source tree.
 
-Results save to `our_optimization/eval_results_c3/milan/PATCHED_<kernel>/`.
+Results save to `our_optimization/eval_results_c3/baremetal/PATCHED_<kernel>/`.
 
 Runtime ~5 min.
 
@@ -216,7 +216,7 @@ output and let Suyamoon know before pushing benchmark results.
 ```bash
 # in REPO
 cd ~/jbd2-project
-git add our_optimization/eval_results_c3/milan/
+git add our_optimization/eval_results_c3/baremetal/
 git commit -m "milan: c3 patched results"
 git push origin results-c3/milan
 ```

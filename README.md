@@ -30,9 +30,9 @@ documentation.
 │   ├── c3_crash_test_b.sh                          ← crash recovery: set/remove
 │   ├── c3_crash_test_c.sh                          ← crash recovery: block xattr
 │   │
-│   ├── eval_milan_c3.sh                            ← bare-metal eval for "Milan"
+│   ├── eval_baremetal_c3.sh                            ← bare-metal eval for "Milan"
 │   ├── eval_sahil_c3.sh                            ← bare-metal eval for "Sahil"
-│   ├── INSTRUCTIONS_MILAN_C3.md                    ← step-by-step walkthrough
+│   ├── INSTRUCTIONS_BAREMETAL_C3.md                    ← step-by-step walkthrough
 │   ├── INSTRUCTIONS_SAHIL_C3.md                    ← step-by-step walkthrough
 │   │
 │   ├── eval_results_c3/                            ← C3 raw benchmark output
@@ -546,8 +546,8 @@ the wall-time speedup should be larger than on our VM's loop device
 (fsync overhead dominates there).
 
 **How to run:**
-Send `our_optimization/eval_milan_c3.sh` +
-`our_optimization/INSTRUCTIONS_MILAN_C3.md` to a collaborator with a
+Send `our_optimization/eval_baremetal_c3.sh` +
+`our_optimization/INSTRUCTIONS_BAREMETAL_C3.md` to a collaborator with a
 bare-metal Linux 6.1.4 machine. They follow the instructions
 end-to-end (~1-1.5 hours including kernel build) and push results to
 branch `results-c3/<name>`.
