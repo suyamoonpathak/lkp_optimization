@@ -1,0 +1,10 @@
+kernel=6.1.4-C3C4Patch
+label=PATCHED_C4
+mode=insert
+N=1000
+repeats=3
+elapsed_ms_mean=6680
+elapsed_ms_stdev=142
+tx_delta_mean=16
+per_op_us_mean=6680
+commits_per_op=0.0160
