@@ -264,9 +264,14 @@ if (error || touched_block || !ext4_has_feature_xattr(inode->i_sb))
         see the bit).
 \end{enumerate}
 
-The full patch is 108 lines (\pth{our_optimization/fc-inline-xattr.patch}):
-9 added in \texttt{fast\_commit.c}, 7 added and 1 deleted in
-\texttt{xattr.c}.
+The full patch is 108 lines
+(\pth{our_optimization/fc-inline-xattr.patch}): \texttt{+9/-0} in
+\texttt{fast\_commit.c} (the new conditional with its comment),
+and \texttt{+27/-4} in \texttt{xattr.c} (the
+\texttt{touched\_block} declaration, five assignments to it on
+each block-touching path, the new conditional at line~2422, the
+removal of the redundant call at line~2500, and explanatory
+comments at both sites).
 
 \subsection{Correctness}
 
@@ -276,17 +281,20 @@ The full patch is 108 lines (\pth{our_optimization/fc-inline-xattr.patch}):
         inline xattrs, lazy unmount, remount, count
         (\textbf{PASS}, 100/100). Test~B: 100 set, 50 even
         removed, lazy unmount, remount, verify exactly the 50
-        odd ones remain (\textbf{PASS}). Test~C: 500-byte xattr
-        forces the block path, lazy unmount, remount, all 668
-        bytes recovered (\textbf{PASS}, confirming the fallback
-        branch still runs full commit when needed).
+        odd ones remain (\textbf{PASS}). Test~C: a 668-byte
+        xattr value (well over the inline limit so the xattr
+        block path is used), lazy unmount, remount, full value
+        recovered (\textbf{PASS}, confirming the fallback branch
+        still runs the full commit when needed).
   \item xfstests subset
         \texttt{generic/\{062,118,300,337,454,455,473,482\}} +
-        \texttt{ext4/032}. 5/5 runnable tests pass on both stock
-        and patched; \texttt{generic/473} fails identically on
-        both (a pre-existing issue) and three tests skip due to
-        missing features. Logs at
-        \pth{our_optimization/xfstests_c3/}.
+        \texttt{ext4/032}. Of the nine tests, three skip due to
+        missing features (reflink for \texttt{generic/118},
+        \texttt{LOGWRITES\_DEV} for \texttt{generic/455} and
+        \texttt{482}). Of the six that ran, five pass and
+        \texttt{generic/473} fails identically on stock and
+        patched (a pre-existing 6.1.4 issue, not a regression).
+        Logs at \pth{our_optimization/xfstests_c3/}.
 \end{itemize}
 
 \subsection{Results}
@@ -456,11 +464,11 @@ change.
         Test~C is the strongest of the three because it stresses
         replay with multiple ADD\_RANGE and DEL\_RANGE tags
         accumulated for the same inode in a single FC log.
-  \item Same xfstests subset as C3. 5/5 runnable tests pass;
-        \texttt{generic/473} fails identically to stock and to
-        the C3 kernel. \texttt{generic/062, 337, 454} (the
-        xattr-heavy tests) all pass, confirming C4 does not
-        regress C3's work. Logs at
+  \item Same xfstests subset as C3. Five of the six runnable
+        tests pass; \texttt{generic/473} again fails identically
+        to stock and to the C3 kernel. \texttt{generic/062, 337,
+        454} (the xattr-heavy tests) all pass, confirming C4
+        does not regress C3's work. Logs at
         \pth{our_optimization/xfstests_c4/patched_6.1.4-cs614-c4-patched.log}.
 \end{itemize}
 

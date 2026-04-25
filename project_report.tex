@@ -536,11 +536,14 @@ modified.
 The patch is 108 lines in a unified diff format. It touches two
 files:
 \begin{itemize}[leftmargin=*]
-  \item \texttt{fs/ext4/fast\_commit.c}: 9 lines added (the new
-        conditional).
-  \item \texttt{fs/ext4/xattr.c}: 7 lines added and 1 deleted (the
-        \texttt{touched\_block} tracking, the new conditional at
-        2422, and the deletion at 2500).
+  \item \texttt{fs/ext4/fast\_commit.c}: \texttt{+9/-0} (the new
+        conditional with its comment).
+  \item \texttt{fs/ext4/xattr.c}: \texttt{+27/-4} (the
+        \texttt{touched\_block} declaration, five assignments to
+        it on each block-touching path, the new conditional at
+        line~2422, the removal of the redundant
+        \texttt{mark\_ineligible} call at line~2500, and
+        explanatory comments at both sites).
 \end{itemize}
 
 The full patch is at
