@@ -291,8 +291,10 @@ The full patch is 108 lines (\pth{our_optimization/fc-inline-xattr.patch}):
 
 \subsection{Results}
 
-\paragraph{VM (256~MB loop, \texttt{-O fast\_commit}, 5000
-\texttt{fsetxattr}+\texttt{fsync}, single inline-sized value).}
+\paragraph{VM (VirtualBox, 11th Gen Intel Core i7-11800H, 4
+cores, 5.7~GiB RAM; 256~MB loop fs with
+\texttt{-O fast\_commit}; 5000
+\texttt{fsetxattr}+\texttt{fsync} on a single inline-sized value).}
 
 \begin{center}
 \begin{tabular}{lrrr}
@@ -305,7 +307,8 @@ JBD2 full commits & 5{,}000 & \textbf{78} & $\mathbf{-98.4\%}$ \\
 \end{tabular}
 \end{center}
 
-\paragraph{Bare-metal (i3-1115G4, SATA SSD, 3 repeats).}
+\paragraph{Bare-metal (11th Gen Intel Core i3-1115G4, 4
+cores, 7.5~GiB RAM, real SATA SSD; 3 repeats).}
 
 \begin{center}
 \begin{tabular}{lrrr}
@@ -463,11 +466,12 @@ change.
 
 \subsection{Results}
 
-\paragraph{VM (1000 ops + per-op fsync, three runs per mode).}
-The C3 kernel is the baseline because C3 does not change any
-fallocate code; on this path the C3 kernel and stock 6.1.4 are
-architecturally identical, and our characterization runs
-confirmed tx/op~=~1.001 on both.
+\paragraph{VM (same setup as C3: i7-11800H, 4 cores, 5.7~GiB RAM,
+256~MB loop fs with \texttt{-O fast\_commit}; 1000 ops + per-op
+fsync, three runs per mode).} The C3 kernel is the baseline
+because C3 does not change any fallocate code; on this path the
+C3 kernel and stock 6.1.4 are architecturally identical, and our
+characterization runs confirmed tx/op~=~1.001 on both.
 
 \begin{center}
 \begin{tabular}{lrrr}
@@ -485,7 +489,8 @@ JBD2 full commits & 1{,}001 & \textbf{16} & $\mathbf{-98.4\%}$ \\
 \end{tabular}
 \end{center}
 
-\paragraph{Bare-metal (i3-1115G4, SATA SSD, 3 repeats).}
+\paragraph{Bare-metal (11th Gen Intel Core i3-1115G4, 4
+cores, 7.5~GiB RAM, real SATA SSD; 3 repeats).}
 
 \begin{center}
 \begin{tabular}{lrrr}
