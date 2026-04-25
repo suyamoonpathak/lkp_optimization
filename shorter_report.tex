@@ -564,55 +564,6 @@ their fallback exists for a deeper reason: replay cannot yet
 update the \texttt{..} dirent safely without a non-trivial
 rewrite.
 
-\section{Related Work}
-
-The original FastCommit paper~\cite{atc24-fc} introduces the
-feature itself and lists the eight current tag types. Both of
-our patches are follow-ons within that framework, extending the
-covered set of operations rather than adding new tags.
-
-iJournaling~\cite{ijournaling} (USENIX ATC 2017) targets the same
-underlying problem, observing that a regular JBD2 commit pays for
-unrelated metadata in the running transaction. It proposes a
-per-file fine-grained journal and reports up to 9$\times$ fsync
-latency reduction. Fast commit is architecturally a more general
-version of the same idea (log only what the operation needs).
-
-OptFS~\cite{optfs} (SOSP 2013) decouples ordering from
-durability by introducing \texttt{osync()} and \texttt{dsync()}
-primitives, so workloads that need only ordering avoid the full
-\texttt{fsync} cost. Reports 2--3$\times$ on random-write and
-file-create workloads. Our patches do not change the
-\texttt{fsync} interface; they make it cheaper for two specific
-operation classes.
-
-BarrierFS~\cite{barrierfs} (FAST 2018) splits journal commit
-into a control plane and a data plane on flash storage, allowing
-the next commit to dispatch before the previous one's
-\texttt{REQ\_PREFLUSH} completes. Like fast commit, it reduces
-\texttt{fsync} cost without on-disk format changes.
-
-CJFS~\cite{cjfs} (FAST 2023) proposes a more invasive JBD2
-redesign with dual-thread journaling and multi-version shadow
-paging; the Compound Flush technique gives 30\% on Varmail. We
-considered porting Compound Flush but our C4 characterization
-showed JBD2 already coalesces most concurrent
-\texttt{fsync}s on 6.1.4 (tx/op drops to 0.003 at $T=16$),
-leaving little headroom.
-
-DJFS~\cite{djfs} (FAST 2025) redesigns ext4 journaling to be
-per-directory; again more invasive than our patches.
-
-Sync+Sync~\cite{syncsync} (USENIX Security 2024) shows that
-concurrent fsyncs contend through JBD2's single commit thread
-and can leak information across security boundaries. Our patches
-do not change the single-commit-thread architecture; by allowing
-more operations to use fast commit they reduce traffic through
-that shared resource.
-
-The original ext4 design and roadmap are described by Mathur et
-al.~\cite{ext4-design}.
-
 \section{Conclusion}
 
 We submit two small, independent patches against ext4 on
