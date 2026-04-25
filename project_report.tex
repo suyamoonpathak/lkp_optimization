@@ -28,8 +28,8 @@
     backgroundcolor=\color{gray!10}
 }
 
-\title{Closing the Fast Commit Coverage Gap for Inline Extended
-Attributes in ext4}
+\title{Closing Two Fast Commit Coverage Gaps in ext4: \\
+Inline Extended Attributes and fallocate Range Operations}
 
 \author{
     Suyamoon Pathak (241110091) \\
@@ -47,26 +47,37 @@ Attributes in ext4}
 ext4 uses JBD2 to journal filesystem metadata. The ``fast commit''
 feature added in Linux~5.10 is supposed to make \texttt{fsync()}
 cheap on many workloads, but it gives up (falls back to a full JBD2
-commit) on operations it does not know how to log. One such
-operation is \texttt{setxattr}: every time a program sets an
-extended attribute (xattr) on a file in a fast-commit-enabled ext4
-filesystem, a full JBD2 commit runs. This kills fast commit for any
-workload that touches SELinux labels, POSIX ACLs, or small
-\texttt{user.*} attributes. This covers almost every modern Linux
-system.
+commit) on operations it does not know how to log. Two such
+operations are \texttt{setxattr} (every SELinux label, POSIX ACL,
+or small \texttt{user.*} attribute change forces a full commit) and
+\texttt{fallocate} with the COLLAPSE\_RANGE / INSERT\_RANGE modes
+(used by log rotators, database log compactors, VM disk tools).
+Both fall back on 100\% of calls, defeating fast commit on these
+paths.
 
-In this project we tried three different ext4 and JBD2 optimizations
-on Linux~6.1.4. The first two optimized rare code paths and gave
-null measurable results. The third closes the xattr fast-commit gap.
-Our patch changes 108 lines in two files. On a Linux~6.1.4 VM it
-reduces the number of full JBD2 commits on a 5000-op setxattr
-workload by 64$\times$ (from 5000 to 78) and cuts wall-clock time
-by 27\%. An independent run on bare-metal hardware confirms the
-patch: 48\% wall-clock speedup and the same 64$\times$ commit
-reduction. The patch introduces no new regressions in any xfstests
-run we performed, and all three of our custom crash-recovery tests
-pass. The three-attempt process also yielded lessons about
-measurement methodology that the report documents.
+In this project we tried four ext4 and JBD2 optimizations on
+Linux~6.1.4 and landed two that work. The first two (a JBD2 fast
+commit barrier deferral and an asynchronous bitmap prefetch
+completion) optimized rare code paths and gave null measurable
+results. The third is a 108-line patch that closes the inline-xattr
+fast-commit gap. The fourth is a 46-line patch that closes the
+fallocate range gap.
+
+On a Linux~6.1.4 VM, the xattr patch reduces the number of full
+JBD2 commits on a 5000-op \texttt{setxattr} workload by
+64$\times$ (from 5000 to 78) and cuts wall-clock time by 27\%.
+The fallocate patch reduces full commits on a 1000-op
+\texttt{fallocate(COLLAPSE\_RANGE)}+\texttt{fsync} workload by
+62.5$\times$ (1001~$\to$~16) and cuts wall-clock time by 23\%; the
+INSERT\_RANGE numbers are nearly identical. Independent
+bare-metal runs by our collaborator confirm both patches: 48\%
+wall-clock speedup for xattr (same 64$\times$ commit reduction);
+43--44\% wall-clock speedup for fallocate (same 62.5$\times$ commit
+reduction). The two patches touch disjoint files and compose without
+conflict. They introduce no new regressions in any xfstests run we
+performed; all six of our custom crash-recovery tests pass. The
+four-attempt process also yielded lessons about measurement
+methodology that the report documents.
 \end{abstract}
 
 \tableofcontents
@@ -82,18 +93,24 @@ kernel is Linux~6.1.4, the evaluation happens on a VM (with an
 option for bare-metal), and whatever we do must be provably correct
 and not break anything else.
 
-We went through three candidate patches before finding one that
-worked. This report describes all three. The first two, while
-technically correct, could not be measured above the noise floor on
-our VM. The third closes a real gap in ext4's fast-commit feature
-that touches 100\% of setxattr operations, and gives a speedup large
-enough to rise above any noise.
+We went through four candidate patches in total. The first two,
+while technically correct, could not be measured above the noise
+floor on our VM. The third closes a real gap in ext4's fast-commit
+feature that touches 100\% of \texttt{setxattr} operations, and
+gives a speedup large enough to rise above any noise. The fourth
+followed the same recipe on a different fast-commit fallback ---
+\texttt{fallocate(COLLAPSE\_RANGE)} and
+\texttt{fallocate(INSERT\_RANGE)} --- and produced an
+architecturally identical 62.5$\times$ commit-count reduction.
 
-We believe the full three-attempt arc is the valuable part of this
-project, not just the final patch. The two failures taught us to
-pick optimization targets by hit rate and not just code elegance.
-This report therefore documents all three honestly, including what
-went wrong and how it shaped the next attempt.
+We believe the full four-attempt arc is the valuable part of this
+project, not just the final patches. The two failures taught us to
+pick optimization targets by hit rate and not just code elegance,
+and the third success let us formalise that rule into a
+``measure before you code'' characterization step that we used to
+pick the fourth target. This report therefore documents all four
+honestly, including what went wrong and how it shaped the next
+attempt.
 
 \subsection{What we built}
 
@@ -181,13 +198,14 @@ every file via \texttt{security.selinux}. POSIX ACLs use
 these happen on a fast-commit filesystem, the per-operation cost is
 paid even though the fast commit area is sitting unused.
 
-\section{Three Candidates}
+\section{Four Candidates}
 
 We did not start with the xattr gap. We got there after two failed
-attempts. Each attempt taught us something about how to pick an
-optimization target. This section describes all three in order.
+attempts. The fourth followed only after the third worked. Each
+attempt taught us something about how to pick an optimization
+target. This section describes all four in order.
 
-\subsection{How we picked the candidates}
+\subsection{How we picked the first three candidates}
 
 We code-reviewed the entire JBD2 and ext4 source tree for comments
 of the form \texttt{TODO:}, \texttt{FIXME:}, and
@@ -203,7 +221,23 @@ This gave us three promising candidates: (1)~a developer TODO in
 synchronous bitmap prefetch completion, and (3)~the xattr fast
 commit gap.
 
-We attempted them in that order.
+We attempted them in that order. C1 and C2 produced null measurable
+results (Sections~4 and~5). C3 worked.
+
+\subsection{How the fourth candidate emerged}
+
+After C3 succeeded, we asked whether any other fast-commit
+fallback in ext4 has the same shape: 100\% hit rate on a specific
+operation, simple enough to fix with a small patch, distinguishable
+on a microbench. We built three small benchmarks and measured them
+on the C3 kernel before writing any code (Section~7.1). The winner
+was the \texttt{FALLOC\_RANGE} fallback, and that became
+Candidate~4.
+
+This ``characterize before you patch'' step is, in our view, the
+methodology lesson of the project. C1 and C2 each cost a week
+because we picked targets by code elegance; C4 took roughly two
+days because we picked it by measured signal.
 
 \section{Candidate 1: Fast Commit Barrier Deferral}
 
@@ -508,11 +542,14 @@ The full patch is at
 We did four layers of correctness checking.
 
 \paragraph{Code review.} The patch went through a spec-compliance
-review and a code-quality review. The code-quality reviewer caught
-two blockers in our first draft: a static-linkage bug where the
-\texttt{static noinline\_for\_stack} attribute was being silently
-stripped, and a resource leak on the OOM path inside
-\texttt{ext4\_mb\_init}. Both were fixed.
+review and a code-quality review. The reviewer caught a subtle
+ineligibility-marker that we missed in our first draft: the
+\texttt{ext4\_xattr\_set} wrapper had a second
+\texttt{mark\_ineligible} call after \texttt{ext4\_journal\_stop}
+(Section~6.3, ``the \texttt{xattr.c:2500} fix''). Without removing
+that call, our patch would have done nothing for end-users even
+though the change inside \texttt{ext4\_xattr\_set\_handle} was
+correct. Catching this before merge avoided a third null result.
 
 \paragraph{Compilation.} The patched files compile with zero
 warnings at kernel warning level 2.
@@ -986,18 +1023,28 @@ conflict.
 
 \subsection{Why the wall-time gain is smaller than the commit-count gain}
 
-On the VM, our patch reduces full commits by 64$\times$ but wall
-time by only 1.4$\times$. On bare-metal, the gap closes: 64$\times$
-vs 1.9$\times$. The gap exists because \texttt{fsync} has fixed
-overhead we do not touch (VFS, syscall, device write-behind).
-Reducing full commits from 5000 to 78 is real, but if each
-\texttt{fsync} still has 4~ms of non-JBD2 overhead, that floor
-bounds the wall-time speedup.
+In both patches the commit-count reduction ($\sim$64$\times$ for
+C3, 62.5$\times$ for C4) is much larger than the wall-time gain
+($\sim$1.4$\times$ on the VM, $\sim$2$\times$ on bare-metal). The
+gap exists because \texttt{fsync} has fixed overhead we do not
+touch: VFS, syscall, device write-behind, and (for C4) extent-tree
+manipulation in \texttt{ext4\_ext\_remove\_space} and
+\texttt{ext4\_ext\_shift\_extents}. Reducing full commits is real,
+but if each \texttt{fsync} still has 3--4~ms of non-JBD2 overhead,
+that floor bounds the wall-time speedup.
 
-This is a weakness of the inline-only scope. A more complete
-patch that also covers block xattrs would not improve this number
-on our workload (single-file, inline-sized values are already
-inline). But it would help workloads that use bigger xattrs.
+The gap closes on bare-metal for both patches in the same way:
+real SSD has a smaller share of non-journal overhead per
+\texttt{fsync}, so the journal saving is a larger share of the
+total. C3 went from 27\% (VM) to 48\% (Milan). C4 went from 23--26\%
+(VM) to 42--44\% (Milan). The two-step factor between VM and
+bare-metal is consistent across both patches, which is what we would
+expect if the underlying source of the gap is the same.
+
+For C3 specifically there is also a coverage-scope effect: a more
+complete patch that also covers block xattrs and EA inodes would not
+improve our microbench number (single-file, inline-sized values are
+already inline) but would help workloads with bigger xattrs.
 
 \subsection{Scope limits and next steps}
 
@@ -1010,7 +1057,7 @@ the kernel and e2fsprogs copies must be byte-identical, so any new
 tag also needs an e2fsprogs patch and a compat feature bit. We
 considered this but decided it was out of scope for a course
 project and left a clear path for future work. Our
-characterization in Section~6.1 confirms that the per-op signal
+characterization in Section~7.1 confirms that the per-op signal
 (7.23~ms, tx/op~=~1.001) is as strong as the C3 inline case, but
 the real-world hit rate is much smaller since typical SELinux and
 ACL values are short and fit inline.
@@ -1081,10 +1128,13 @@ Candidate~4 applies the same pattern to a second slow path:
 \texttt{fallocate(INSERT\_RANGE)}. Both modes used to force a full
 JBD2 commit. A 46-line patch in \texttt{fs/ext4/extents.c} replaces
 the \texttt{mark\_ineligible} call with range tracking. On the VM
-this gives a 62.5$\times$ reduction in full commits and about 24\%
-wall-time gain for both modes. Three crash-recovery tests plus the
-xfstests subset all pass; Candidate~3's xattr benefit is preserved
-on the C4 kernel, confirming the patches compose.
+this gives a 62.5$\times$ reduction in full commits and 23--26\%
+wall-time gain for the two modes. On Milan's bare-metal box the
+same 62.5$\times$ commit reduction reproduces byte-identically and
+the wall-time gain nearly doubles to 42--44\%. Three crash-recovery
+tests plus the xfstests subset all pass; Candidate~3's xattr
+benefit is preserved on the C4 kernel, confirming the patches
+compose.
 
 Both Candidates~3 and~4 were picked by the same rule, which is the
 main methodology takeaway of the project: pick optimization targets
@@ -1100,8 +1150,11 @@ document as a concrete template for future ext4-FC follow-ons.
 Thanks to Milan for catching the \texttt{fast\_commit} feature-bit
 oversight in Candidate~1 (which would have made us ship an
 incorrect claim to the professor), and for running the bare-metal
-benchmark that confirmed Candidate~3. Thanks to Sahil for being
-ready to run the bare-metal benchmark.
+benchmarks that confirmed both Candidate~3 (48\% wall-time
+speedup, same 64$\times$ commit reduction as our VM) and
+Candidate~4 (43--44\% wall-time speedup, same 62.5$\times$ commit
+reduction as our VM). Thanks to Sahil for being ready to run the
+bare-metal benchmarks as a second cross-check.
 
 \begin{thebibliography}{9}
 \bibitem{atc24-fc}
@@ -1281,11 +1334,13 @@ The artifact implements two independent features:
   \item \textbf{C3}: Fast Commit support for inline extended
         attribute changes. Two small hunks across
         \texttt{fs/ext4/xattr.c} and
-        \texttt{fs/ext4/fast\_commit.c} (Section~7.3).
+        \texttt{fs/ext4/fast\_commit.c} (Section~6.3 of the main
+        body for the design).
   \item \textbf{C4}: Fast Commit support for
         \texttt{FALLOC\_FL\_COLLAPSE\_RANGE} and
         \texttt{FALLOC\_FL\_INSERT\_RANGE}. One hunk per site in
-        \texttt{fs/ext4/extents.c} (Section~8).
+        \texttt{fs/ext4/extents.c} (Section~7.3 of the main body
+        for the design).
 \end{itemize}
 
 For each supported scenario, the test script, parameters, and
@@ -1490,11 +1545,15 @@ cat our_optimization/char_results/6.1.4-cs614-c3-patched/fallocate_collapse.txt
 cat our_optimization/char_results/6.1.4-cs614-c3-patched/fallocate_insert.txt
 cat our_optimization/char_results/6.1.4-cs614-c4-patched/fallocate_collapse.txt
 cat our_optimization/char_results/6.1.4-cs614-c4-patched/fallocate_insert.txt
+# C4 bare-metal (Milan)
+cat our_optimization/eval_results_c4/milan/BASELINE_6.1.4-C3Patch/collapse_summary.txt
+cat our_optimization/eval_results_c4/milan/BASELINE_6.1.4-C3Patch/insert_summary.txt
+cat our_optimization/eval_results_c4/milan/PATCHED_C4_6.1.4-C3C4Patch/collapse_summary.txt
+cat our_optimization/eval_results_c4/milan/PATCHED_C4_6.1.4-C3C4Patch/insert_summary.txt
 \end{lstlisting}
 
-These files together give the VM evidence for both candidates plus
-C3's bare-metal cross-check. C4 bare-metal (Milan, pending) will
-drop into \texttt{eval\_results\_c4/milan/} once complete.
+These files together give the VM and bare-metal evidence for both
+candidates.
 
 \paragraph{Step 5.} Read the full writeups:
 \texttt{our\_optimization/CANDIDATE3\_results.md},
@@ -1652,19 +1711,26 @@ parameterized:
 \begin{itemize}[leftmargin=*]
   \item \textit{Purpose.} Confirm the C4 VM result on real hardware.
   \item \textit{How to run.} Follow
-        \texttt{INSTRUCTIONS\_MILAN\_C4.md} on Milan's
-        bare-metal box. Assumes C3 has already been built and
-        tested on the same tree, so the incremental work is the C4
-        patch, a rebuild, and a benchmark run.
-  \item \textit{Estimated runtime.} 35--45~minutes, mostly kernel
-        build.
-  \item \textit{Expected result.} $\sim$62.5$\times$ transaction
-        reduction (architectural claim, reproduces across
-        machines); wall-time gain likely larger than VM's 24\% due
-        to a real SSD exposing more journal-cost share.
+        \texttt{INSTRUCTIONS\_MILAN\_C4.md} on a bare-metal
+        Linux~6.1.4 machine with C3 already installed. The
+        incremental work is applying the C4 patch on top of the
+        C3-patched tree, rebuilding with
+        \texttt{LOCALVERSION=-cs614-c4-patched}, and re-running
+        \texttt{eval\_milan\_c4.sh} once on each kernel.
+  \item \textit{Estimated runtime.} 35--45~minutes per kernel,
+        mostly kernel build; the bench itself is under a minute.
+  \item \textit{Expected result.} 62.5$\times$ transaction
+        reduction (architectural claim, byte-identical to the VM);
+        wall-time gain about 43--44\%, nearly double the VM's
+        23--26\%, because a real SSD exposes more journal-cost share.
+  \item \textit{Recorded result (Milan, this run).} COLLAPSE:
+        12{,}445~ms~$\to$~7{,}032~ms ($-43.5\%$);
+        INSERT: 11{,}539~ms~$\to$~6{,}680~ms ($-42.1\%$);
+        \texttt{tx\_delta} 1001~$\to$~16 in both modes. Stdev on
+        patched runs as low as 0.5\% CV.
   \item \textit{How to access.}
-        \texttt{our\_optimization/eval\_results\_c4/milan/}
-        after Milan's branch is merged.
+        \texttt{our\_optimization/eval\_results\_c4/milan/\{BASELINE\_6.1.4-C3Patch,\\
+        PATCHED\_C4\_6.1.4-C3C4Patch\}/}.
 \end{itemize}
 
 \end{document}
