@@ -1,0 +1,674 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\PassOptionsToPackage{hyphens}{url}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{microtype}
+
+\emergencystretch=3em
+\newcommand{\pth}[1]{\path{#1}}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    urlcolor=blue,
+    citecolor=blue,
+    breaklinks=true
+}
+
+\lstset{
+    basicstyle=\ttfamily\footnotesize,
+    breaklines=true,
+    frame=single,
+    numbers=none,
+    showstringspaces=false,
+    keywordstyle=\color{blue},
+    commentstyle=\color{gray},
+    backgroundcolor=\color{gray!10}
+}
+
+\title{Closing Two Fast Commit Coverage Gaps in ext4}
+
+\author{
+    Suyamoon Pathak (241110091) \\
+    CS614 Linux Kernel Programming \\
+    Indian Institute of Technology Kanpur
+}
+
+\date{April 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+ext4's fast-commit feature gives \texttt{fsync()} a low-latency
+commit path, but falls back to a full JBD2 commit on operations it
+does not know how to log. We close two such fallbacks on
+Linux~6.1.4: a 108-line patch that adds fast-commit support for
+inline extended attributes, and a 46-line patch that adds it for
+the COLLAPSE\_RANGE and INSERT\_RANGE modes of \texttt{fallocate}.
+On the VM the xattr patch reduces JBD2 full commits on a 5000-op
+\texttt{setxattr} workload by 64$\times$ (5000 to 78) and cuts
+wall-time by 27\%; the fallocate patch reduces full commits on a
+1000-op workload by 62.5$\times$ (1001 to 16) and cuts wall-time
+by 23--26\%. Bare-metal runs reproduce the commit-count reductions
+byte-identically and roughly double the wall-time gain (48\% for
+xattr, 43--44\% for fallocate). Six custom crash-recovery tests
+and an xfstests subset confirm no regression. We also report two
+earlier candidate patches that produced no measurable improvement
+and the lessons drawn from them.
+\end{abstract}
+
+\section{Introduction}
+
+The project's goal is to optimize the consistency mechanism of
+ext4 on Linux~6.1.4. The mechanism in question is JBD2 (the
+journal that keeps the filesystem crash-consistent) and its
+fast-commit extension introduced in Linux~5.10. Any change must
+preserve crash-recovery semantics and must be validated by
+measurement.
+
+We attempted four candidate optimizations. Two of them (Section~3)
+were correctly implemented patches against developer TODO comments
+in the kernel but optimized paths that were hit too rarely to
+measure. The two that worked (Sections~4 and~5) close fast-commit
+fallbacks that fire on 100\% of a specific operation class:
+\texttt{setxattr} for Candidate~3, fallocate's COLLAPSE\_RANGE and
+INSERT\_RANGE for Candidate~4. Both are small (108 and 46 lines),
+both reuse existing fast-commit primitives, and both reproduce
+their architectural claim (a $\sim$62--64$\times$ drop in full
+commits) on bare-metal hardware as well as the VM.
+
+\paragraph{What we built.}
+\begin{itemize}[leftmargin=*]
+  \item Two patches against pristine 6.1.4:
+        \pth{fc-inline-xattr.patch} (C3) and
+        \pth{fc-fallocate-range.patch} (C4).
+  \item Two benchmark scripts (xattr, fallocate) and a
+        characterization harness used to pick the C4 target.
+  \item Six custom crash-recovery scripts (three for each patch).
+  \item Two earlier patches with postmortems explaining why they
+        produced no measurable improvement.
+\end{itemize}
+
+\section{Background}
+
+The relevant background, restricted to what the rest of the
+report relies on, is the fast-commit fallback. Fast commit keeps a
+small reserved region of the journal and writes a compact record
+per modified inode instead of running a full JBD2 commit. When
+ext4 hits an operation it cannot log this way, it calls
+\texttt{ext4\_fc\_mark\_ineligible(\_,REASON,\_)} and falls back
+to the full commit path. The original FastCommit
+paper~\cite{atc24-fc} lists ten such reasons, including
+\texttt{XATTR}, \texttt{FALLOC\_RANGE}, \texttt{CROSS\_RENAME},
+and \texttt{RENAME\_DIR}. Two of those reasons
+(\texttt{XATTR}~for the inline case, and \texttt{FALLOC\_RANGE}
+for collapse and insert range) are what our two successful patches
+remove.
+
+\section{Candidates that did not measure (C1, C2)}
+
+Both candidates were implementations of long-standing TODO
+comments in the kernel. Both were correct (built, booted,
+mounted, no dmesg errors), but neither produced a measurable
+speedup on our workloads.
+
+\subsection{C1: fast-commit barrier deferral}
+
+The TODO sits at \texttt{fs/jbd2/commit.c} around line~454:
+
+\begin{lstlisting}[language=C]
+/*
+ * TODO: by blocking fast commits here, we are increasing
+ * fsync() latency slightly. Strictly speaking, we don't need
+ * to block fast commits until the transaction enters T_FLUSH
+ * state. So an optimization is possible where we block new fast
+ * commits here and wait for existing ones to complete
+ * just before we enter T_FLUSH. That way, the existing fast
+ * commits and this full commit can proceed parallely.
+ */
+\end{lstlisting}
+
+We moved the drain loop that waits for in-flight fast commits
+from before \texttt{T\_LOCKED} to just before \texttt{T\_FLUSH},
+along with the \texttt{journal->j\_fc\_off~=~0} reset that
+depends on it. On our fio randwrite+fsync workload the patched
+average commit time was 6661~$\mu$s versus 6590~$\mu$s on stock,
+a 1\% delta in the wrong direction. The
+\pth{/proc/fs/jbd2/loopX-8/info} counter showed the original
+barrier almost never fired in this workload because
+\texttt{T\_LOCKED} already takes well under a millisecond. An
+earlier ``57\% improvement'' result turned out to be a setup
+artifact: the stock benchmark had run for 5~MB while the patched
+benchmark had run for 60 seconds, and the test filesystem was
+not formatted with \texttt{-O fast\_commit} at all (so the drain
+loop was never executed). After fixing both, no improvement
+remained. Patch and postmortem are at
+\pth{our_optimization/jbd2-fc-barrier-defer.patch} and
+\pth{our_optimization/CANDIDATE1_postmortem.md}.
+
+\subsection{C2: async bitmap prefetch completion}
+
+The TODO sits at \texttt{fs/ext4/mballoc.c:2564}:
+
+\begin{lstlisting}[language=C]
+/*
+ * TODO: We should actually kick off the buddy bitmap setup in a work
+ * queue when the buffer I/O is completed, so that we don't block
+ * waiting for the block allocation bitmap read to finish when
+ * ext4_mb_prefetch_fini is called from ext4_mb_regular_allocator().
+ */
+\end{lstlisting}
+
+We added a per-superblock workqueue and slab cache; in
+\texttt{ext4\_mb\_prefetch\_fini}, if the bitmap is already
+uptodate the original synchronous init is used, otherwise a work
+item is queued and the caller returns. After two correctness
+fixes caught by code review (a \texttt{noinline\_for\_stack}
+attribute that we had silently stripped, and an OOM-path leak of
+\texttt{s\_buddy\_cache}), the patch built cleanly. The problem
+was again measurement: in our microbenchmark the cold-init path
+was hit on $<$1\% of allocations (the bitmaps were already in
+memory after the first few iterations), and our fio throughput
+benchmark had a 70\% coefficient of variation across repeats on
+the same kernel. We did not invest further. Patch and postmortem
+are at \pth{our_optimization/mballoc-async-prefetch.patch} and
+\pth{our_optimization/CANDIDATE2_postmortem.md}.
+
+\paragraph{Lesson.} A patch is only as useful as the fraction of
+operations that exercise the path it changes. After C1 and C2 we
+adopted a hard rule: only ship a patch if a microbench can show
+that the slow path it removes is hit on a substantial fraction of
+the target operation.
+
+\section{Candidate 3: Fast Commit Support for Inline xattrs}
+
+\subsection{Intuition}
+
+Every \texttt{setxattr} or \texttt{removexattr} call on a
+fast-commit-enabled ext4 filesystem forces a full JBD2 commit.
+The cost is paid on every SELinux relabel, every POSIX ACL
+change, and every short \texttt{user.*} attribute write, which
+makes the slow path effectively 100\% hit on xattr-touching
+workloads. The ATC~2024 paper~\cite{atc24-fc} flags this gap but
+provides no patch.
+
+\subsection{Code analysis}
+
+The fallback is fired by an unconditional call at the end of
+\texttt{ext4\_xattr\_set\_handle} in \texttt{fs/ext4/xattr.c}
+(line 2422):
+
+\begin{lstlisting}[language=C]
+ext4_fc_mark_ineligible(inode->i_sb, EXT4_FC_REASON_XATTR, handle);
+\end{lstlisting}
+
+A second \texttt{mark\_ineligible} call sits at line 2500 inside
+the wrapper \texttt{ext4\_xattr\_set}, after
+\texttt{ext4\_journal\_stop}, with \texttt{handle==NULL}. With
+\texttt{handle} null this call marks the running JBD2 transaction
+ineligible, which would suppress fast commit on any later
+\texttt{fsync} sharing that transaction. Missing this second call
+would have made the patch a no-op for end users, which is a key
+finding from this candidate.
+
+ext4 stores xattrs in three places: \emph{inline} (in the inode
+body, between \texttt{EXT4\_GOOD\_OLD\_INODE\_SIZE
++ i\_extra\_isize} and the end of the inode), in a separate
+\emph{block} (pointed to by \texttt{i\_file\_acl}), or in
+dedicated \emph{EA inodes}. We targeted the inline case because
+it covers nearly all real-world xattr operations: SELinux labels
+and POSIX ACLs are short and fit inline.
+
+\subsection{Design and implementation}
+
+Two changes, both small.
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Expand the FC inode log.}
+        \texttt{ext4\_fc\_write\_inode} in
+        \texttt{fs/ext4/fast\_commit.c:863} currently logs the
+        inode's bytes up to
+        \texttt{EXT4\_GOOD\_OLD\_INODE\_SIZE
+        + i\_extra\_isize}. We extend it to log up to
+        \texttt{EXT4\_INODE\_SIZE} when the inode has inline
+        xattrs (detected via the existing
+        \texttt{EXT4\_STATE\_XATTR} flag). Replay needs no
+        change: \texttt{ext4\_fc\_replay\_inode} already
+        \texttt{memcpy}s \texttt{fc\_len} bytes, and the
+        validator already accepts records up to
+        \texttt{s\_inode\_size}.
+  \item \textbf{Skip the ineligibility call when safe.} In
+        \texttt{ext4\_xattr\_set\_handle}, add a local
+        \texttt{bool touched\_block} that is set to true on every
+        path that calls \texttt{ext4\_xattr\_block\_set} or sets
+        \texttt{i.in\_inode = 1} (the EA-inode path). Replace the
+        unconditional \texttt{mark\_ineligible} at line 2422 with:
+\begin{lstlisting}[language=C]
+if (error || touched_block || !ext4_has_feature_xattr(inode->i_sb))
+    ext4_fc_mark_ineligible(inode->i_sb,
+                            EXT4_FC_REASON_XATTR, handle);
+\end{lstlisting}
+        and delete the wrapper's redundant call at line 2500. The
+        third condition handles the very first xattr on a fresh
+        filesystem (the superblock xattr feature bit has just
+        been set in memory but not yet persisted; if we
+        fast-committed and the machine crashed, replay would not
+        see the bit).
+\end{enumerate}
+
+The full patch is 108 lines (\pth{our_optimization/fc-inline-xattr.patch}):
+9 added in \texttt{fast\_commit.c}, 7 added and 1 deleted in
+\texttt{xattr.c}.
+
+\subsection{Correctness}
+
+\begin{itemize}[leftmargin=*]
+  \item Three crash-recovery scripts
+        (\texttt{c3\_crash\_test\_\{a,b,c\}.sh}). Test~A: 100
+        inline xattrs, lazy unmount, remount, count
+        (\textbf{PASS}, 100/100). Test~B: 100 set, 50 even
+        removed, lazy unmount, remount, verify exactly the 50
+        odd ones remain (\textbf{PASS}). Test~C: 500-byte xattr
+        forces the block path, lazy unmount, remount, all 668
+        bytes recovered (\textbf{PASS}, confirming the fallback
+        branch still runs full commit when needed).
+  \item xfstests subset
+        \texttt{generic/\{062,118,300,337,454,455,473,482\}} +
+        \texttt{ext4/032}. 5/5 runnable tests pass on both stock
+        and patched; \texttt{generic/473} fails identically on
+        both (a pre-existing issue) and three tests skip due to
+        missing features. Logs at
+        \pth{our_optimization/xfstests_c3/}.
+\end{itemize}
+
+\subsection{Results}
+
+\paragraph{VM (256~MB loop, \texttt{-O fast\_commit}, 5000
+\texttt{fsetxattr}+\texttt{fsync}, single inline-sized value).}
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+Metric & Stock & Patched & Change \\
+\midrule
+Wall time         & 31{,}102~ms & 22{,}734~ms & $-26.9\%$ \\
+JBD2 full commits & 5{,}000 & \textbf{78} & $\mathbf{-98.4\%}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Bare-metal (i3-1115G4, SATA SSD, 3 repeats).}
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+Metric & Stock & Patched & Change \\
+\midrule
+Wall time (mean)  & 57{,}627~ms & 30{,}089~ms & $-47.8\%$ \\
+JBD2 full commits & 5{,}000 & \textbf{78} & $\mathbf{-98.4\%}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The transaction count reduction (5000 to 78, $\sim$64$\times$) is
+identical between VM and bare-metal: this is the architectural
+claim of the patch and it does not depend on the hardware. The
+wall-time gain is larger on bare-metal (48\% versus 27\%) because
+on a real SSD the fixed VFS and syscall overhead per
+\texttt{fsync} is a smaller share of the total, leaving more room
+for the journal-side savings to show through.
+
+A non-xattr regression check (fio randwrite+fsync, 4 jobs, 30~s)
+gave 528 IOPS patched versus 530 stock, well within noise.
+
+\section{Candidate 4: Fast Commit Support for fallocate Range Operations}
+
+\subsection{Intuition}
+
+After C3 we asked which other \texttt{ext4\_fc\_mark\_ineligible}
+fallback has the same shape: a 100\% hit rate on a well-defined
+operation class, a small expected patch, and a microbench that
+cleanly distinguishes patched from unpatched behavior.
+
+\subsection{Characterization first}
+
+For C4 we measured before writing kernel code. Three candidate
+microbenchmarks were run on the C3 kernel: fallocate
+COLLAPSE/INSERT range; large (4~KB) \texttt{setxattr} values that
+spill to the xattr block (the case C3 does not cover); and
+many-thread concurrent \texttt{fsync} (the CJFS-style compound
+flush target). Three runs each, $N=1000$ ops (or 100 per thread):
+
+\begin{center}
+\begin{tabular}{lrrl}
+\toprule
+Workload & ms/op & tx/op & signal \\
+\midrule
+fallocate COLLAPSE\_RANGE & 7.03 & 1.001 & strong \\
+fallocate INSERT\_RANGE   & 7.01 & 1.001 & strong \\
+xattr block (4~KB value)  & 7.23 & 1.001 & strong but narrow \\
+concurrent fsync $T=16$   & 1.21 & 0.003 & weak \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Fallocate COLLAPSE/INSERT showed the same per-op signal as C3's
+xattr case. The xattr-block path showed equal per-op cost but
+covers a minority of \texttt{setxattr} calls (typical SELinux/ACL
+values are short and already handled by C3). Concurrent fsync was
+already well-coalesced by JBD2's group commit
+(tx/op falls from 0.020 at $T=1$ to 0.003 at $T=16$), so a
+CJFS-style port would not help much on 6.1.4. Fallocate became
+C4.
+
+\subsection{Code analysis}
+
+Two call sites in \texttt{fs/ext4/extents.c} mark fallocate
+range operations as ineligible, both right after
+\texttt{ext4\_journal\_start}:
+
+\begin{lstlisting}[language=C]
+/* line 5363, inside ext4_collapse_range */
+ext4_fc_mark_ineligible(sb, EXT4_FC_REASON_FALLOC_RANGE, handle);
+
+/* line 5508, inside ext4_insert_range */
+ext4_fc_mark_ineligible(sb, EXT4_FC_REASON_FALLOC_RANGE, handle);
+\end{lstlisting}
+
+Crucially, ext4 already has fast-commit tags for the underlying
+extent-level changes
+(\texttt{FC\_TAG\_ADD\_RANGE}, \texttt{FC\_TAG\_DEL\_RANGE},
+emitted by \texttt{ext4\_fc\_write\_inode\_data}), and the
+per-inode \texttt{FC\_TAG\_INODE} tag carries the new
+\texttt{i\_size}. The fallback exists only because the
+collapse/insert paths never call
+\texttt{ext4\_fc\_track\_range} on the logical blocks they
+modify, so the FC commit walker does not know to include the
+shifted region.
+
+\subsection{Design and implementation}
+
+Replace each of the two \texttt{mark\_ineligible} calls with a
+call to \texttt{ext4\_fc\_track\_range} over the affected
+logical-block range, computed at the point where the journal
+handle is open:
+
+\begin{lstlisting}[language=C]
+/* collapse path: track punch_start to current EOF */
+ext4_fc_track_range(handle, inode, punch_start,
+    ((inode->i_size + inode->i_sb->s_blocksize - 1) >>
+     EXT4_BLOCK_SIZE_BITS(inode->i_sb)) - 1);
+
+/* insert path: track offset_lblk to post-grow EOF */
+ext4_fc_track_range(handle, inode, offset_lblk,
+    ((inode->i_size + len + inode->i_sb->s_blocksize - 1) >>
+     EXT4_BLOCK_SIZE_BITS(inode->i_sb)) - 1);
+\end{lstlisting}
+
+At fsync time, \texttt{ext4\_fc\_write\_inode\_data} walks the
+post-shift extent tree over the tracked range and emits
+\texttt{FC\_TAG\_ADD\_RANGE} for each shifted extent at its new
+position plus \texttt{FC\_TAG\_DEL\_RANGE} for any resulting
+hole. \texttt{FC\_TAG\_INODE} is emitted by the
+\texttt{ext4\_mark\_inode\_dirty} call later in each function
+and carries the new \texttt{i\_size}.
+
+\paragraph{Replay correctness.} The non-obvious part is that
+\texttt{ext4\_fc\_replay\_del\_range} frees the physical blocks
+of the range it removes via \texttt{ext4\_mb\_mark\_bb(\ldots,
+0)}. In an insert (where the physical data does not move, only
+the logical position shifts) \texttt{DEL\_RANGE} replay
+transiently marks blocks free and \texttt{ADD\_RANGE} replay
+re-binds them. The intermediate bitmap state is wrong; the final
+state is reconciled by the pre-existing
+\texttt{ext4\_fc\_set\_bitmaps\_and\_counters} pass, which runs
+at the end of replay and re-marks all currently-reachable blocks
+as used.
+
+The full patch is 46 lines (\pth{our_optimization/fc-fallocate-range.patch}),
+two hunks in \texttt{fs/ext4/extents.c}. No change to
+\texttt{fast\_commit.c}, no new tag types, no on-disk format
+change.
+
+\subsection{Correctness}
+
+\begin{itemize}[leftmargin=*]
+  \item Three crash-recovery scripts
+        (\texttt{c4\_crash\_test\_\{a,b,c\}.sh}). Each writes a
+        distinct-byte-pattern file, performs the operation,
+        fsyncs, lazy-umounts to simulate a crash, remounts, and
+        compares the resulting file's md5 and size to the
+        expected post-operation state computed in pure Python.
+        Test~A: collapse 32 blocks (\textbf{PASS}). Test~B:
+        insert 16 blocks at offset~16 (\textbf{PASS}). Test~C:
+        three interleaved collapse/insert ops (\textbf{PASS}).
+        Test~C is the strongest of the three because it stresses
+        replay with multiple ADD\_RANGE and DEL\_RANGE tags
+        accumulated for the same inode in a single FC log.
+  \item Same xfstests subset as C3. 5/5 runnable tests pass;
+        \texttt{generic/473} fails identically to stock and to
+        the C3 kernel. \texttt{generic/062, 337, 454} (the
+        xattr-heavy tests) all pass, confirming C4 does not
+        regress C3's work. Logs at
+        \pth{our_optimization/xfstests_c4/patched_6.1.4-cs614-c4-patched.log}.
+\end{itemize}
+
+\subsection{Results}
+
+\paragraph{VM (1000 ops + per-op fsync, three runs per mode).}
+The C3 kernel is the baseline because C3 does not change any
+fallocate code; on this path the C3 kernel and stock 6.1.4 are
+architecturally identical, and our characterization runs
+confirmed tx/op~=~1.001 on both.
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+Metric & Baseline (C3) & Patched (C4) & Change \\
+\midrule
+\multicolumn{4}{l}{\textit{COLLAPSE\_RANGE}} \\
+Wall time (mean)  & 7{,}029~ms & 5{,}423~ms & $-22.8\%$ \\
+JBD2 full commits & 1{,}001 & \textbf{16} & $\mathbf{-98.4\%}$ \\
+\midrule
+\multicolumn{4}{l}{\textit{INSERT\_RANGE}} \\
+Wall time (mean)  & 7{,}006~ms & 5{,}189~ms & $-25.9\%$ \\
+JBD2 full commits & 1{,}001 & \textbf{16} & $\mathbf{-98.4\%}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Bare-metal (i3-1115G4, SATA SSD, 3 repeats).}
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+Metric & Baseline (C3) & Patched (C3+C4) & Change \\
+\midrule
+\multicolumn{4}{l}{\textit{COLLAPSE\_RANGE}} \\
+Wall time (mean)  & 12{,}445~ms & 7{,}032~ms & $-43.5\%$ \\
+JBD2 full commits & 1{,}001 & \textbf{16} & $\mathbf{-98.4\%}$ \\
+\midrule
+\multicolumn{4}{l}{\textit{INSERT\_RANGE}} \\
+Wall time (mean)  & 11{,}539~ms & 6{,}680~ms & $-42.1\%$ \\
+JBD2 full commits & 1{,}001 & \textbf{16} & $\mathbf{-98.4\%}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The transaction-count reduction is byte-identical to the VM
+(1001~$\to$~16 in both modes). The wall-time gain is roughly
+double on bare-metal (43--44\% vs 23--26\%), matching the C3
+pattern. Patched-run variance is small: 0.5\% CV for COLLAPSE,
+2\% for INSERT.
+
+\section{Discussion}
+
+\subsection{Why C3 and C4 are measurable and C1, C2 are not}
+
+\begin{center}
+\begin{tabular}{lcccc}
+\toprule
+ & C1 & C2 & \textbf{C3} & \textbf{C4} \\
+\midrule
+Slow-path hit rate & $\sim$0.1\% & $<$1\% & \textbf{100\%} & \textbf{100\%} \\
+Effect per hit     & $<$1~ms     & sub-ms & 5--11~ms        & 5--7~ms \\
+Measurable on VM?  & No          & No     & Yes (64$\times$) & Yes (62.5$\times$) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+C3 and C4 together remove two of the fast-commit fallback reasons
+documented in \texttt{fs/ext4/fast\_commit.h}: \texttt{XATTR}
+(inline case) and \texttt{FALLOC\_RANGE} (collapse and insert).
+The two patches touch disjoint files (\texttt{xattr.c} and
+\texttt{fast\_commit.c} for C3; \texttt{extents.c} for C4), so
+they compose without conflict.
+
+\subsection{Why wall-time gain is smaller than commit-count gain}
+
+For both patches, commit-count drops by $\sim$60$\times$ but
+wall-time drops by only $\sim$1.4$\times$ on the VM and
+$\sim$2$\times$ on bare-metal. The gap is the fixed per-fsync
+overhead our patches do not touch: VFS and syscall entry/exit,
+device write-behind, and (for C4) extent-tree manipulation in
+\texttt{ext4\_ext\_remove\_space} and
+\texttt{ext4\_ext\_shift\_extents}. Bare-metal closes the gap
+because real SSD has a smaller share of non-journal cost per
+\texttt{fsync}.
+
+\subsection{Scope limits}
+
+We did not extend C3 to xattrs that overflow into a separate block
+or into EA inodes. Doing so would require new fast-commit tag
+types (\texttt{FC\_TAG\_XATTR\_SET}, \texttt{FC\_TAG\_XATTR\_DEL})
+and replay support, which in turn would need a matching
+e2fsprogs patch and an on-disk compat feature bit. Our
+characterization confirms the per-op signal is as strong as the
+inline case, but the real-world hit rate is much smaller because
+typical SELinux/ACL values are short. We did not address
+\texttt{CROSS\_RENAME} or \texttt{RENAME\_DIR} either, since
+their fallback exists for a deeper reason: replay cannot yet
+update the \texttt{..} dirent safely without a non-trivial
+rewrite.
+
+\section{Related Work}
+
+The original FastCommit paper~\cite{atc24-fc} introduces the
+feature itself and lists the eight current tag types. Both of
+our patches are follow-ons within that framework, extending the
+covered set of operations rather than adding new tags.
+
+iJournaling~\cite{ijournaling} (USENIX ATC 2017) targets the same
+underlying problem, observing that a regular JBD2 commit pays for
+unrelated metadata in the running transaction. It proposes a
+per-file fine-grained journal and reports up to 9$\times$ fsync
+latency reduction. Fast commit is architecturally a more general
+version of the same idea (log only what the operation needs).
+
+OptFS~\cite{optfs} (SOSP 2013) decouples ordering from
+durability by introducing \texttt{osync()} and \texttt{dsync()}
+primitives, so workloads that need only ordering avoid the full
+\texttt{fsync} cost. Reports 2--3$\times$ on random-write and
+file-create workloads. Our patches do not change the
+\texttt{fsync} interface; they make it cheaper for two specific
+operation classes.
+
+BarrierFS~\cite{barrierfs} (FAST 2018) splits journal commit
+into a control plane and a data plane on flash storage, allowing
+the next commit to dispatch before the previous one's
+\texttt{REQ\_PREFLUSH} completes. Like fast commit, it reduces
+\texttt{fsync} cost without on-disk format changes.
+
+CJFS~\cite{cjfs} (FAST 2023) proposes a more invasive JBD2
+redesign with dual-thread journaling and multi-version shadow
+paging; the Compound Flush technique gives 30\% on Varmail. We
+considered porting Compound Flush but our C4 characterization
+showed JBD2 already coalesces most concurrent
+\texttt{fsync}s on 6.1.4 (tx/op drops to 0.003 at $T=16$),
+leaving little headroom.
+
+DJFS~\cite{djfs} (FAST 2025) redesigns ext4 journaling to be
+per-directory; again more invasive than our patches.
+
+Sync+Sync~\cite{syncsync} (USENIX Security 2024) shows that
+concurrent fsyncs contend through JBD2's single commit thread
+and can leak information across security boundaries. Our patches
+do not change the single-commit-thread architecture; by allowing
+more operations to use fast commit they reduce traffic through
+that shared resource.
+
+The original ext4 design and roadmap are described by Mathur et
+al.~\cite{ext4-design}.
+
+\section{Conclusion}
+
+We submit two small, independent patches against ext4 on
+Linux~6.1.4 that close two fast-commit fallback reasons
+(\texttt{XATTR} inline-case and \texttt{FALLOC\_RANGE}). Both
+produce a $\sim$60$\times$ reduction in JBD2 full commits on
+their respective microbench, both reproduce that
+architectural claim byte-identically on bare-metal, and both
+preserve crash-recovery semantics under custom and xfstests-based
+testing. Two earlier candidates were correctly implemented but
+optimized paths too rarely hit to measure; their postmortems are
+included in the artifact for completeness.
+
+\begin{thebibliography}{9}
+\bibitem{ext4-design}
+A. Mathur, M. Cao, S. Bhattacharya, A. Dilger, A. Tomas, L. Vivier.
+\textit{The new ext4 filesystem: current status and future plans}.
+Proceedings of the Linux Symposium, Ottawa, 2007.
+\url{https://www.kernel.org/doc/ols/2007/ols2007v2-pages-21-34.pdf}
+
+\bibitem{ijournaling}
+D. Park, D. Shin.
+\textit{iJournaling: Fine-Grained Journaling for Improving the
+Latency of Fsync System Call}.
+USENIX ATC 2017.
+\url{https://www.usenix.org/conference/atc17/technical-sessions/presentation/park}
+
+\bibitem{optfs}
+V. Chidambaram, T. S. Pillai, A. C. Arpaci-Dusseau, R. H.
+Arpaci-Dusseau.
+\textit{Optimistic Crash Consistency}.
+ACM SOSP 2013.
+\url{https://research.cs.wisc.edu/adsl/Publications/optfs-sosp13.pdf}
+
+\bibitem{barrierfs}
+Y. Won, J. Jung, G. Choi, J. Oh, S. Son, J. Hwang, S. Cho.
+\textit{Barrier-Enabled IO Stack for Flash Storage}.
+USENIX FAST 2018.
+\url{https://www.usenix.org/conference/fast18/presentation/won}
+
+\bibitem{atc24-fc}
+H. Shirwadkar, S. Kadekodi, T. Ts'o.
+\textit{FastCommit: Resource-Efficient, Performant, and
+Cost-Effective File System Journaling}.
+USENIX ATC 2024.
+
+\bibitem{cjfs}
+Y. Oh, J. Yoo, D. Nam, C. Min, Y. Won.
+\textit{CJFS: Concurrent Journaling for Better Scalability}.
+USENIX FAST 2023.
+
+\bibitem{djfs}
+J. Yoo, Y. Oh, et al.
+\textit{DJFS: Directory-Granularity Filesystem Journaling for
+CMM-H SSDs}.
+USENIX FAST 2025.
+
+\bibitem{syncsync}
+Q. Jiang, et al.
+\textit{Sync+Sync: A Covert Channel Built on fsync with Storage}.
+USENIX Security 2024.
+\end{thebibliography}
+
+\end{document}
