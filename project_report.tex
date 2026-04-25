@@ -1,6 +1,10 @@
 \documentclass[11pt,a4paper]{article}
 
 \usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+% Allow line breaks at hyphens and slashes inside \url{} and \path{}
+% so long file paths in prose do not overflow the right margin.
+\PassOptionsToPackage{hyphens}{url}
 \usepackage{hyperref}
 \usepackage{listings}
 \usepackage{xcolor}
@@ -9,12 +13,24 @@
 \usepackage{graphicx}
 \usepackage{enumitem}
 \usepackage{titlesec}
+\usepackage{microtype}
+
+% Soft-justify safety net: lets TeX stretch interword spacing slightly
+% to avoid overfull \hbox when long monospace tokens (paths,
+% identifiers) cannot break.
+\emergencystretch=3em
+
+% \pth{...} renders a filesystem path in monospace and allows the
+% line to break at slashes, underscores, and hyphens. Use this for
+% any long path or identifier that appears in body prose.
+\newcommand{\pth}[1]{\path{#1}}
 
 \hypersetup{
     colorlinks=true,
     linkcolor=blue,
     urlcolor=blue,
-    citecolor=blue
+    citecolor=blue,
+    breaklinks=true
 }
 
 \lstset{
@@ -146,11 +162,14 @@ The deliverables in this submission are:
 
 \subsection{ext4 and JBD2}
 
-ext4 is the default Linux journaling filesystem. When you write to a
-file and then call \texttt{fsync()}, ext4 uses JBD2 (Journaling Block
-Device~2) to make sure the change is on disk before \texttt{fsync}
-returns. A JBD2 ``commit'' is the operation that flushes a batch of
-metadata changes through the journal.
+ext4 is the default Linux journaling filesystem. The original
+design and roadmap are described by Mathur and colleagues in their
+2007 Linux Symposium paper~\cite{ext4-design}, which also
+introduces JBD2 as the journaling block device that ext4 layers on
+top of. When you write to a file and then call \texttt{fsync()},
+ext4 uses JBD2 to make sure the change is on disk before
+\texttt{fsync} returns. A JBD2 ``commit'' is the operation that
+flushes a batch of metadata changes through the journal.
 
 A full JBD2 commit is expensive. In our VM it takes around 6~ms. On
 a real SSD it takes less, but it is still a whole set of writes
@@ -692,8 +711,8 @@ We found one: the \texttt{FALLOC\_FL\_COLLAPSE\_RANGE} and
 These are the modes that, respectively, remove a middle slice of a
 file and shift following data left, or insert a zero-filled slice at
 a given offset and shift following data right. They are used by log
-rotators, database log compactors, and VM disk tools. Both modes call
-\texttt{ext4\_fc\_mark\_ineligible(EXT4\_FC\_REASON\_FALLOC\_RANGE)}
+rotators, database log compactors, and VM disk tools. Both modes
+call \pth{ext4_fc_mark_ineligible(EXT4_FC_REASON_FALLOC_RANGE)}
 unconditionally and force a full JBD2 commit on every invocation.
 
 \subsection{Measure first, then decide}
@@ -882,7 +901,7 @@ pre-existing ext4 bug, not a C4 regression. Critically,
 \texttt{generic/062, 337, 454} (the xattr-heavy tests) all pass ---
 this confirms C4 does not regress C3's xattr work. The patches are
 independent. Full log at
-\texttt{our\_optimization/xfstests\_c4/patched\_6.1.4-cs614-c4-patched.log}.
+\pth{our_optimization/xfstests_c4/patched_6.1.4-cs614-c4-patched.log}.
 
 \subsection{Performance evaluation: VM}
 
@@ -1090,22 +1109,57 @@ natural follow-ons: we extend the covered set by two operations
 (inline xattr for C3, fallocate COLLAPSE/INSERT for C4) using the
 existing tag infrastructure rather than adding new tag types.
 
-CJFS \cite{cjfs} proposes a more invasive redesign of JBD2 with
-dual-thread journaling and multi-version shadow paging. Their
-Compound Flush technique gives 30\% on Varmail. We considered
+iJournaling~\cite{ijournaling} (USENIX ATC 2017) is an earlier
+attempt at the same problem fast commit later solved. Park and
+Shin observe that a regular JBD2 commit pays for unrelated metadata
+that happens to be in the running transaction; they propose a
+per-file ``fine-grained'' journal that only records updates for
+the specific file being \texttt{fsync}'d. Architecturally fast
+commit is a more general version of the same idea: log only what
+the operation needs, not the whole transaction. iJournaling
+reports up to 9$\times$ fsync latency reduction and 4$\times$
+manycore throughput; that is a useful upper bound on what a
+``log less'' approach can buy, and it gives our 27\% / 48\% C3
+numbers context (we are not anywhere near that ceiling because
+\texttt{setxattr} touches very little metadata to begin with).
+
+OptFS~\cite{optfs} (SOSP 2013) attacks the same fsync-latency
+problem from a different angle: decouple ordering from durability
+by introducing \texttt{osync()} and \texttt{dsync()} primitives, so
+a workload that only needs ordering does not pay the full
+\texttt{fsync} cost. Reports 2--3$\times$ on random write and
+file-create workloads, 7$\times$ on Varmail. Our patches do not
+change the \texttt{fsync} interface --- they make the existing
+\texttt{fsync} cheaper for two specific operation classes --- so
+they compose with OptFS-style API changes rather than competing
+with them.
+
+BarrierFS~\cite{barrierfs} (FAST 2018) takes a hardware-aware route
+on flash storage: it splits journal commit into a control plane
+(commit thread) and a data plane (flush thread) so that the next
+journal commit can dispatch its writes before the previous one's
+\texttt{REQ\_PREFLUSH} completes. The dual-mode design is
+interesting because it shows another way to reduce \texttt{fsync}
+cost without changing the on-disk format. Our patches are
+orthogonal: BarrierFS speeds up the slow path; our patches let more
+operations bypass it.
+
+CJFS~\cite{cjfs} (FAST 2023) proposes a more invasive redesign of
+JBD2 with dual-thread journaling and multi-version shadow paging.
+Their Compound Flush technique gives 30\% on Varmail. We considered
 porting Compound Flush but our own characterization measurement
 found that 6.1.4's JBD2 already coalesces most concurrent
 \texttt{fsync}s --- tx/op drops from 0.020 at T=1 to 0.003 at
 T=16 --- leaving only about 15\% headroom, which together with the
 several weeks of backport work made it a worse choice than C4.
 
-DJFS \cite{djfs} on FAST~2025 redesigns ext4 journaling to be
+DJFS~\cite{djfs} (FAST 2025) redesigns ext4 journaling to be
 per-directory. Again more invasive than our patch.
 
-Sync+Sync \cite{syncsync} demonstrates that concurrent fsyncs
-contend through JBD2's single commit thread and can leak
-information across security boundaries. Our patch does not change
-the single-commit-thread architecture, but by allowing more
+Sync+Sync~\cite{syncsync} (USENIX Security 2024) demonstrates that
+concurrent fsyncs contend through JBD2's single commit thread and
+can leak information across security boundaries. Our patch does not
+change the single-commit-thread architecture, but by allowing more
 operations to use fast commit it reduces the traffic through that
 shared resource.
 
@@ -1157,6 +1211,32 @@ reduction as our VM). Thanks to Sahil for being ready to run the
 bare-metal benchmarks as a second cross-check.
 
 \begin{thebibliography}{9}
+\bibitem{ext4-design}
+A. Mathur, M. Cao, S. Bhattacharya, A. Dilger, A. Tomas, L. Vivier.
+\textit{The new ext4 filesystem: current status and future plans}.
+Proceedings of the Linux Symposium, Ottawa, 2007.
+\url{https://www.kernel.org/doc/ols/2007/ols2007v2-pages-21-34.pdf}
+
+\bibitem{ijournaling}
+D. Park, D. Shin.
+\textit{iJournaling: Fine-Grained Journaling for Improving the
+Latency of Fsync System Call}.
+USENIX ATC 2017.
+\url{https://www.usenix.org/conference/atc17/technical-sessions/presentation/park}
+
+\bibitem{optfs}
+V. Chidambaram, T. S. Pillai, A. C. Arpaci-Dusseau, R. H.
+Arpaci-Dusseau.
+\textit{Optimistic Crash Consistency}.
+ACM SOSP 2013.
+\url{https://research.cs.wisc.edu/adsl/Publications/optfs-sosp13.pdf}
+
+\bibitem{barrierfs}
+Y. Won, J. Jung, G. Choi, J. Oh, S. Son, J. Hwang, S. Cho.
+\textit{Barrier-Enabled IO Stack for Flash Storage}.
+USENIX FAST 2018.
+\url{https://www.usenix.org/conference/fast18/presentation/won}
+
 \bibitem{atc24-fc}
 H. Shirwadkar, S. Kadekodi, T. Ts'o.
 \textit{FastCommit: Resource-Efficient, Performant, and
@@ -1655,7 +1735,7 @@ parameterized:
         (Milan's run gave 48\%); same $\sim$64$\times$ transaction
         reduction.
   \item \textit{How to access.}
-        \texttt{our\_optimization/eval\_results\_c3/<contributor>/*/xattr\_loop.txt}
+        \pth{our_optimization/eval_results_c3/<contributor>/*/xattr_loop.txt}
         after the contributor's branch is merged.
 \end{itemize}
 
@@ -1728,9 +1808,10 @@ parameterized:
         INSERT: 11{,}539~ms~$\to$~6{,}680~ms ($-42.1\%$);
         \texttt{tx\_delta} 1001~$\to$~16 in both modes. Stdev on
         patched runs as low as 0.5\% CV.
-  \item \textit{How to access.}
-        \texttt{our\_optimization/eval\_results\_c4/milan/\{BASELINE\_6.1.4-C3Patch,\\
-        PATCHED\_C4\_6.1.4-C3C4Patch\}/}.
+  \item \textit{How to access.} The two summary directories are
+        \pth{our_optimization/eval_results_c4/milan/BASELINE_6.1.4-C3Patch/}
+        and
+        \pth{our_optimization/eval_results_c4/milan/PATCHED_C4_6.1.4-C3C4Patch/}.
 \end{itemize}
 
 \end{document}
